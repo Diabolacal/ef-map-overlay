@@ -1,0 +1,17 @@
+# CMake build directories
+/build/
+/build-*/
+/Testing/
+
+# Visual Studio artifacts
+/.vs/
+*.vcxproj*
+*.sln
+*.user
+*.suo
+*.VC.db
+
+# Generated binaries
+/bin/
+/obj/
+*.log
