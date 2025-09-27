@@ -36,47 +36,59 @@
 - **Custom protocol** `ef-overlay://attach?session=<token>` for explicit actions from the browser.
 - **Local HTTP API** `http://127.0.0.1:<port>/status`, `/attach`, `/dismiss` for health checks and richer commands.
 
-## 6. Phase 1 – Feasibility Spike ("Can we draw anything?")
-**Goals**
-- Launch helper, inject into a running EF Frontier process without restart.
-- Render a placeholder window (e.g., ImGui panel with static text) inside the game across windowed and fullscreen modes.
-- Demonstrate round-trip command: browser button → helper → overlay appear.
-- Package helper with installer, tray icon, and basic settings dialog.
+## 6. Progress Summary (2025-09-27)
+- ✅ **Helper + injector MVP** – C++ helper boots, exposes HTTP API, launches overlay smoke script, injects DX12 module with hotkey toggle.
+- ✅ **DX12 overlay hook** – Swap-chain hook renders ImGui window, handles input capture (F8 toggle, drag/move, edge resize) without impacting gameplay.
+- ✅ **Automation** – PowerShell smoke script coordinates helper launch, payload post, and DLL injection for quick manual validation.
+- ▢ **Installer & signing** – Deferred until we stabilize feature set; helper currently launched manually.
+- ▢ **Browser CTA** – Web → helper bridge still manual; custom protocol & detection flow to be designed.
 
-**Tasks**
-1. **Helper skeleton**
-   - Create Win32/WinUI helper with tray icon, logging, config file.
-   - Register `ef-overlay://` custom protocol, start HTTP listener (localhost).
-2. **Injection pipeline**
-   - Implement process discovery (by executable name).
-   - Inject DLL via `CreateRemoteThread` + `LoadLibrary` or Detours loader.
-   - Add safety checks (multiple clients, x86 vs x64).
-3. **DX12 hook**
-   - Hook swap chain present/resize, set up command queue.
-   - Integrate ImGui (or similar) showing static panel.
-   - Add hotkey to toggle overlay.
-4. **Browser integration**
-   - Add helper detection snippet in EF Map (poll `/status`).
-   - Add "Open in game" button that triggers `ef-overlay://attach` with sample payload.
-5. **Packaging**
-   - Create MSI/MSIX installer, sign helper and DLL (Auth23 code signing).
-   - Document installation and first-run steps.
+## 7. Phase 2 – Native Content Integration (Next milestones)
+Focus: transform the overlay from a text HUD into a native starfield view synchronized with the EF-Map web app, while laying groundwork for bidirectional controls.
 
-**Success criteria**
-- Overlay appears above game content devices (windowed + fullscreen borderless + exclusive fullscreen).
-- No crashes or noticeable frame drops (>1% frame time delta in testing).
-- Helper logs show attach/detach lifecycle; browser receives status feedback (e.g., success toast).
+> **Guiding principle:** the overlay should complement, not clone, the browser app. Prioritize context-aware cues (live system updates, safety alerts, quick actions) that keep pilots in-game without alt-tabbing. Multi-monitor users already have full EF-Map; our differentiator is immediacy and automation tied to game state.
 
-**Deliverables**
-- Helper + DLL source tree.
-- Build/release pipeline producing signed installer.
-- Internal usage doc / troubleshooting guide.
+### 7.1 Data & messaging contracts
+1. **Overlay state v2 spec** *(EF-Map-main & helper)*
+   - Expand `overlay_state` schema with camera pose, highlighted systems, player marker, and UI hints.
+   - Define binary layout (size, versioning) for shared-memory payloads; budget for larger textures/buffers.
+2. **Overlay ↔ helper events** *(helper & overlay)*
+   - Add event queue (shared memory or named pipe) for overlay-generated interactions (button clicks, text submit).
+   - Helper exposes `/overlay/event` endpoint (HTTP/WebSocket) to forward events to the browser with session auth.
 
-## 7. Phase 2 – Content Integration (Future)
-- Embed EF Map overlay UI (e.g., React panel rendered via headless Chromium-to-texture or native ImGui components).
-- Secure communications (session tokens between web app and helper).
-- Support dynamic updates (route changes, waypoints) via WebSocket or long polling.
-- Implement overlay configuration UI (opacity, positioning presets) in helper tray menu.
+### 7.2 Rendering pipeline
+3. **Star catalog asset** *(EF-Map-main tooling)*
+   - Export compact binary (positions, system_id, name hashes) from existing map data.
+   - Helper packages asset and provides checksum/version handshake to overlay.
+4. **Native starfield renderer spike** *(overlay DLL)*
+   - Upload static buffers (stars as instanced point sprites) and draw polyline routes with lightweight shaders.
+   - Match EF-Map aesthetics (brightness falloff, selection glow) and ensure <1 ms GPU cost per frame.
+5. **HUD controls** *(overlay DLL & helper)*
+   - Build ImGui panel with buttons/toggles for follow-mode, overlay opacity, route step actions.
+   - Confirm focus handling (keyboard navigation, text input) and end-to-end event delivery back to the web app.
+
+### 7.3 Live data inputs
+6. **Game log watcher** *(helper)*
+   - Monitor EVE Frontier gamelog directory, parse system-change lines, resolve to canonical IDs.
+   - Publish player location to overlay state (optional toggle) and propagate to EF-Map web client when enabled.
+   - Evaluate additional log sources (chat/local intel) for high-value alerts without overwhelming players.
+7. **Browser integration** *(EF-Map-main)*
+   - Detect helper availability, expose “Open in overlay” CTA, push state updates via HTTP/WebSocket.
+   - Handle overlay events (e.g., mark waypoint done) and refresh UI accordingly.
+
+### 7.4 Packaging & UX (deferred until feature complete)
+8. **Tray application & installer** *(helper)*
+   - Wrap helper services in tray UI (start/stop overlay, enable log tracking, configure shortcuts).
+   - Ship MSI/MSIX installer with Authenticode signing and auto-update channel.
+   - Provide per-display profiles (single vs multi-monitor) so overlay defaults match player setups.
+
+## 8. Tooling & Tech Stack
+- Language: C++20 for DLL & helper core (optionally C# for helper UI via WinUI 3).
+- Hooking: MinHook or Microsoft Detours (DX12 friendly).
+- UI: ImGui (prototype) → evaluate Ultralight/CEF for HTML rendering.
+- Installer: WiX Toolset (MSI) or MSIX + self-updater (Squirrel/Electron-builder) later.
+- Signing: OV/EV Authenticode certificate via DigiCert/Sectigo.
+- Logging: spdlog / ETW for DLL; helper log file under `%LOCALAPPDATA%/EFOverlay`.
 
 ## 8. Tooling & Tech Stack
 - Language: C++20 for DLL & helper core (optionally C# for helper UI via WinUI 3).
@@ -103,7 +115,8 @@
 - How to synchronize route data securely (JWT token exchange? local ephemeral key?).
 
 ## 11. Next Steps
-1. Approve feasibility scope and allocate time for spike (estimate: 2–3 weeks).
-2. Acquire signing certificate and define installer strategy.
-3. Start prototype repository (e.g., `overlay-helper/` with helper + DLL + docs).
-4. Once prototype succeeds, revisit this plan to detail Phase 2 content milestones.
+1. Finalize overlay state v2 schema & event channel contract (EF-Map-main + helper).
+2. Implement star catalog export and native renderer spike (overlay repo).
+3. Prototype helper log watcher + location toggle.
+4. Design browser CTA & helper discovery flow; mirror plan updates in `EF-Map-main`.
+5. Revisit packaging milestone once native rendering & event loop prove stable.
