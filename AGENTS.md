@@ -29,6 +29,12 @@ Useful entry points:
 - Localhost bridge: Use signed requests / short-lived tokens; note any security-sensitive changes in the decision log.
 - Installer pipeline: Include signing + packaging verification steps and note certificate usage.
 
+## High-risk surfaces (coordinate before changing)
+- **Process injection & DX12 hook** – Files under `src/overlay/` that touch swap-chain hooks or input routing; mistakes can crash the game client. Keep smoke script handy for validation.
+- **Helper protocol & IPC contracts** – `src/helper/`, `src/shared/`, and any schema headers mirrored in EF-Map-main. Breaking changes require simultaneous updates to browser payload producers.
+- **Security-sensitive storage** – Certificate references, signing scripts, and credential handling under `tools/`. Do not alter signing flow without operator approval.
+- **Installer packaging** – CMake/MSI/MSIX definitions under `build/` or `tools/`. Coordinate before changing packaging defaults or update channels.
+
 ## Safety & boundaries
 - Avoid introducing web app changes here—use `EF-Map-main` for anything involving React/Workers or Cloudflare assets.
 - Never commit secrets (certificates, signing keys). Reference secure storage or environment variables instead.

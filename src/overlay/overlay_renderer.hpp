@@ -10,6 +10,7 @@
 
 #include "overlay_schema.hpp"
 #include "shared_memory_channel.hpp"
+#include "event_channel.hpp"
 
 class OverlayRenderer {
 public:
@@ -41,6 +42,8 @@ private:
     HMODULE module_{nullptr};
 
     overlay::SharedMemoryReader sharedReader_;
+    overlay::OverlayEventWriter eventWriter_;
+    std::atomic_bool eventWriterReady_{false};
     mutable std::mutex stateMutex_;
     std::string lastPayload_;
     std::optional<overlay::OverlayState> currentState_;

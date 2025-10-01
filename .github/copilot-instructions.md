@@ -12,6 +12,15 @@ Purpose: This repository hosts the native helper application, DirectX 12 overlay
 
 For the combined guardrails that apply to both repos, cross-reference `EF-Map-main/.github/copilot-instructions.md` and `EF-Map-main/AGENTS.md`.
 
+### Agent Runbook Index
+| Need | Start here | Notes |
+| --- | --- | --- |
+| Overlay workflow expectations | `AGENTS.md` → “Workflow primer” | Mirrors the main repo’s contract; highlights overlay-specific gates and coordination rules. |
+| Build & packaging steps | `docs/LLM_TROUBLESHOOTING_GUIDE.md` (main repo) → “Verification Matrix” | Use the matrix to pick relevant checks; add helper/overlay build commands as they come online. |
+| Cloudflare/web integration touchpoints | `EF-Map-main/docs/CLI_WORKFLOWS.md` | Provides Wrangler-centric flows that inform how overlay payload endpoints are validated. |
+| Roadmap synchronization | `docs/initiatives/GAME_OVERLAY_PLAN.md` → “Sync checklist” | Ensures both repositories stay aligned when milestones shift. |
+| Decision logging | `docs/decision-log.md` + main repo log | Record overlay decisions and cross-link to EF-Map-main entries when shared components move. |
+
 ### Model Workflow Expectations (GPT-5 Codex)
 - Start each reply with a brief acknowledgement plus the immediate plan.
 - Maintain a synced todo list with exactly one item `in-progress` at a time.

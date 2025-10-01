@@ -55,6 +55,11 @@ void OverlayRenderer::initialize(HMODULE module)
 
     running_.store(true);
     pollThread_ = std::thread(&OverlayRenderer::pollLoop, this);
+    eventWriterReady_.store(eventWriter_.ensure());
+    if (!eventWriterReady_.load())
+    {
+        spdlog::warn("Overlay event writer initialization failed; events will be suppressed");
+    }
     initialized_.store(true);
 
     const auto thread_tag = std::hash<std::thread::id>{}(pollThread_.get_id());
@@ -92,6 +97,7 @@ void OverlayRenderer::resetState()
     lastError_.clear();
     lastUpdatedAtMs_ = 0;
     lastVersion_ = 0;
+    eventWriterReady_.store(false);
 }
 
 void OverlayRenderer::pollLoop()
@@ -143,6 +149,16 @@ void OverlayRenderer::renderImGui()
         const bool nowVisible = !visible_.load();
         visible_.store(nowVisible);
         spdlog::info("Overlay visibility toggled: {}", nowVisible ? "shown" : "hidden");
+        if (eventWriterReady_.load())
+        {
+            overlay::OverlayEvent visibilityEvent;
+            visibilityEvent.type = overlay::OverlayEventType::ToggleVisibility;
+            visibilityEvent.payload = nlohmann::json{{"visible", nowVisible}}.dump();
+            if (!eventWriter_.publish(visibilityEvent))
+            {
+                spdlog::warn("Failed to publish ToggleVisibility event");
+            }
+        }
     }
 
     if (!visible_.load())
@@ -166,7 +182,7 @@ void OverlayRenderer::renderImGui()
     const auto nowMs = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count());
 
-    ImGui::SetNextWindowSize(ImVec2(320.0f, 0.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(360.0f, 0.0f), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowBgAlpha(0.92f);
 
     ImGui::Begin("EF-Map Overlay", nullptr, ImGuiWindowFlags_NoCollapse);
@@ -192,6 +208,7 @@ void OverlayRenderer::renderImGui()
         ImGui::Text("Schema version: %u", version);
         ImGui::Text("Route nodes: %zu", state.route.size());
         ImGui::Text("Generated: %.1f seconds ago", ageSeconds);
+        ImGui::Text("Follow mode: %s", state.follow_mode_enabled ? "enabled" : "disabled");
 
         if (state.notes.has_value())
         {
@@ -219,6 +236,100 @@ void OverlayRenderer::renderImGui()
         {
             ImGui::Text("...and %zu more nodes", state.route.size() - maxRows);
         }
+
+        if (state.player_marker.has_value())
+        {
+            ImGui::Separator();
+            const auto& marker = *state.player_marker;
+            ImGui::Text("Player: %s (%s)%s",
+                marker.display_name.c_str(),
+                marker.system_id.c_str(),
+                marker.is_docked ? " [Docked]" : "");
+        }
+
+        if (!state.highlighted_systems.empty())
+        {
+            ImGui::Separator();
+            ImGui::TextUnformatted("Highlights:");
+            ImGui::Indent();
+            for (const auto& highlight : state.highlighted_systems)
+            {
+                ImGui::BulletText("%s (%s) [%s]", highlight.display_name.c_str(), highlight.system_id.c_str(), highlight.category.c_str());
+                if (highlight.note.has_value())
+                {
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.65f, 0.76f, 0.95f, 1.0f));
+                    ImGui::TextWrapped("%s", highlight.note->c_str());
+                    ImGui::PopStyleColor();
+                }
+            }
+            ImGui::Unindent();
+        }
+
+        if (state.camera_pose.has_value())
+        {
+            const auto& pose = *state.camera_pose;
+            ImGui::Separator();
+            ImGui::Text("Camera position: (%.2f, %.2f, %.2f)", pose.position.x, pose.position.y, pose.position.z);
+            ImGui::Text("Camera look-at: (%.2f, %.2f, %.2f)", pose.look_at.x, pose.look_at.y, pose.look_at.z);
+            ImGui::Text("Camera FOV: %.1f\u00B0", pose.fov_degrees);
+        }
+
+        if (!state.hud_hints.empty())
+        {
+            ImGui::Separator();
+            ImGui::TextUnformatted("HUD hints:");
+            ImGui::Indent();
+            for (const auto& hint : state.hud_hints)
+            {
+                ImGui::BulletText("%s%s", hint.text.c_str(), hint.dismissible ? " (dismissible)" : "");
+                ImGui::SameLine();
+                ImGui::TextDisabled("[%s]", hint.active ? "active" : "inactive");
+            }
+            ImGui::Unindent();
+        }
+
+        if (state.active_route_node_id.has_value())
+        {
+            ImGui::Separator();
+            ImGui::Text("Active route node: %s", state.active_route_node_id->c_str());
+        }
+    }
+
+    if (!eventWriterReady_.load())
+    {
+        eventWriterReady_.store(eventWriter_.ensure());
+    }
+
+    if (eventWriterReady_.load())
+    {
+        ImGui::Separator();
+        if (ImGui::Button("Send waypoint advance event"))
+        {
+            overlay::OverlayEvent event;
+            event.type = overlay::OverlayEventType::WaypointAdvanced;
+            event.payload = nlohmann::json{{"source", "overlay"}, {"sent_ms", nowMs}}.dump();
+            if (!eventWriter_.publish(event))
+            {
+                spdlog::warn("Failed to publish WaypointAdvanced event");
+            }
+        }
+
+        ImGui::SameLine();
+        if (ImGui::Button("Request follow toggle"))
+        {
+            overlay::OverlayEvent event;
+            event.type = overlay::OverlayEventType::FollowModeToggled;
+            event.payload = nlohmann::json{{"requested", true}}.dump();
+            if (!eventWriter_.publish(event))
+            {
+                spdlog::warn("Failed to publish FollowModeToggled event");
+            }
+        }
+    }
+    else
+    {
+        ImGui::Separator();
+        ImGui::TextColored(ImVec4(0.9f, 0.2f, 0.2f, 1.0f), "Event queue unavailable.");
     }
 
     ImGui::End();

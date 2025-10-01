@@ -1,5 +1,14 @@
 <!-- Overlay decision log created 2025-09-26. Mirror significant cross-repo events with `EF-Map-main/docs/decision-log.md` (sibling repository) and include a `Cross-repo` note per entry when applicable. -->
 
+## 2025-10-01 – Helper WebSocket hub + EF-Map bridge handshake
+- Goal: Promote the helper’s WebSocket hub (real-time overlay state/events) and finalize the browser handshake so EF-Map consumes live payloads without HTTP polling.
+- Files: `src/helper/helper_websocket.{hpp,cpp}`, `src/helper/helper_server.{hpp,cpp}`, `cmake/Dependencies.cmake`, `src/helper/CMakeLists.txt`, helper docs (minor).
+- Diff: +2 new source files (~560 LoC) plus ~+220/−80 adjustments to helper server lifecycle and CMake dependency wiring.
+- Risk: medium (long-lived network listeners + broadcast threading).
+- Gates: build ✅ (`cmake --build build --config Release`) | tests ✅ (`ctest -C Release`) | smoke ⏳ (tray/WebSocket badge documentation next).
+- Cross-repo: EF-Map main decision log (2025-10-01 – Helper WebSocket bridge + frontend badge).
+- Follow-ups: Surface helper tray/Web UI indicators, add WebSocket smoke script, and expand unit coverage for handshake failure paths.
+
 ## 2025-09-26 – Repository bootstrap & guardrails mirror
 - Goal: Establish baseline guardrails for the EF-Map overlay helper repository and mirror shared documentation from the main EF-Map project.
 - Files: `AGENTS.md`, `.github/copilot-instructions.md`, `docs/decision-log.md`, `docs/initiatives/GAME_OVERLAY_PLAN.md`, workspace README.
@@ -73,13 +82,15 @@
 - Follow-ups: Expand coverage once DX12 hook lands (e.g., snapshot dispatch fuzzing), wire tests into future CI workflow.
 
 ## 2025-09-26 – DX12 swap-chain hook integration
-- Goal: Replace the stub overlay loop with a MinHook-powered DirectX 12 swap-chain hook that renders ImGui using live shared-memory data.
-- Files: `src/overlay/{dllmain.cpp,overlay_renderer.{hpp,cpp},overlay_hook.{hpp,cpp},CMakeLists.txt}`, root `README.md`, `src/overlay/README.md`.
-- Diff: +2 source files (hook implementation), significant updates to renderer lifecycle and documentation.
-- Risk: high (installs runtime hooks in the game process, manages GPU resources).
-- Gates: build ✅ (`cmake --build build --config Release`) | tests ✅ (`ctest -C Release --output-on-failure`) | smoke ⚪ (in-game validation pending access to client).
-- Cross-repo: No immediate EF-Map main changes; helper payload contract unchanged.
-- Follow-ups: Harden hook teardown (resource fences, error handling), capture in-game smoke results, and add CI coverage for hook compilation warnings.
+
+## 2025-10-01 – Log watcher system ID resolver
+- Goal: Resolve Local chat system names to canonical EF system IDs so overlay payloads match shared schema expectations.
+- Files: `src/helper/{log_watcher.{hpp,cpp},system_resolver.{hpp,cpp},system_resolver_data.hpp,helper_runtime.{hpp,cpp},CMakeLists.txt}`, `tests/overlay_tests.cpp`.
+- Diff: +3 source files, +1 generated header (~24k entries), updates to helper runtime/log watcher wiring, new unit tests.
+- Risk: medium (large embedded dataset + runtime resolution affects log watcher output).
+- Gates: build ✅ (`cmake --build build --config Release`) | tests ✅ (`ctest --test-dir build -C Release`) | smoke ⏳ (tray/runbook validation next session).
+- Cross-repo: Dataset generated from `EF-Map-main/all_solarsystems.json`; no code changes required in main repo yet.
+- Follow-ups: Expose helper event bridge to EF-Map client; handle duplicate system names (`D:28NL`, `Alghoarismi`) via manual mapping if needed.
 
 ## 2025-09-27 – DX12 overlay smoke test & queue capture fix
 - Goal: Diagnose missing in-game overlay rendering, capture the game’s command queue reliably, add a visibility toggle, and verify the overlay UI inside the EVE Frontier client.
@@ -97,6 +108,42 @@
 - Gates: build ✅ (`cmake --build build --config Release --target ef_overlay_module`) | tests ⚪ (unchanged) | smoke ⚪ (awaiting in-game verification post-build).
 - Gates: smoke ✅ (manual injection via `tools/overlay_smoke.ps1` with helper payload and in-game verification for F8 toggle, drag, scroll, multi-corner resize).
 - Follow-ups: Validate long-session stability and consider helper auto-shutdown flag in smoke script; document cross-repo impact once EF-Map main integrates overlay controls.
+
+## 2025-10-01 – Roadmap refresh: log telemetry focus & HTML embed stance
+- Goal: Elevate the game log watcher and combat telemetry overlay milestones, document required event-channel groundwork, and capture guidance on HTML overlay embedding.
+- Files: `docs/initiatives/GAME_OVERLAY_PLAN.md`.
+- Diff: Adjusted Phase 2 milestones (log watcher detail, new combat telemetry item), refined next steps, added HTML embedding cautionary note.
+- Risk: low (documentation only).
+- Gates: build n/a | tests n/a | smoke n/a.
+- Cross-repo: EF-Map main decision log (2025-10-01 – Roadmap refresh: log telemetry focus & HTML embed stance).
+- Follow-ups: Implement helper log watcher + location toggle, prototype combat telemetry overlay, revisit HTML embedding after native renderer spike.
+
+## 2025-10-01 – Overlay schema v2 + event queue infrastructure
+- Goal: Finalize the v2 overlay state contract (player marker, highlights, camera pose, HUD hints, follow flag) and stand up a shared-memory event queue with helper HTTP polling for overlay-generated actions.
+- Files: `src/shared/overlay_schema.*`, `src/shared/event_channel.*` (new), `src/shared/CMakeLists.txt`, `src/helper/{helper_server.*,main.cpp}`, `src/overlay/overlay_renderer.*`, `tests/overlay_tests.cpp`, `docs/initiatives/GAME_OVERLAY_PLAN.md`.
+- Diff: +2 new shared files (event ring buffer), ~+430/-60 lines updating schema, helper/overlay plumbing, and unit tests; plan updated to mark milestone complete.
+- Risk: medium (shared-memory layout change + new cross-process queue).
+- Gates: build ✅ (`cmake --build build --config Release`) | tests ✅ (`ctest -C Release`) | smoke ⏳ (needs in-game verification of new debug UI + event emission).
+- Cross-repo: EF-Map main decision log (2025-10-01 – Overlay schema v2 + event queue infrastructure).
+- Follow-ups: Bridge helper event queue to EF-Map web client, feed real payloads from log watcher once implemented, add automated smoke covering event drain endpoint.
+
+## 2025-10-01 – Roadmap reprioritization: helper tray shell MVP
+- Goal: Pull the helper tray shell forward in the roadmap to provide a tangible control surface before log watcher / event bridge work, documenting the new sequencing.
+- Files: `docs/initiatives/GAME_OVERLAY_PLAN.md` (mirrored in EF-Map main).
+- Diff: Added Section 7.0 for tray shell milestone, retitled packaging section, reordered “Next Steps.”
+- Risk: low (documentation only).
+- Gates: build n/a | tests n/a | smoke n/a.
+- Cross-repo: EF-Map main decision log (2025-10-01 – Roadmap reprioritization: helper tray shell MVP).
+- Follow-ups: Implement tray shell MVP, then resume log watcher and event bridge milestones as reordered.
+
+## 2025-10-01 – Helper log watcher foundation
+- Goal: Monitor live Local chat and combat logs to derive player location/combat activity and publish automatic overlay states from the helper runtime.
+- Files: `src/helper/{helper_runtime.*,log_watcher.*,log_parsers.*,CMakeLists.txt}`, `tests/{CMakeLists.txt,overlay_tests.cpp}`, build scripts; added Windows API handling for default log paths.
+- Diff: +4 new source files, ~+640/−20 lines touching helper runtime + tests.
+- Risk: medium (multithreaded file tailing, shared-memory publication).
+- Gates: build ✅ (`cmake --build build --config Debug`) | tests ✅ (`ctest --test-dir build -C Debug`) | smoke ⏳ (pending in-game validation once tray diagnostics land).
+- Cross-repo: None yet (EF-Map main unchanged until event bridge wiring).
+- Follow-ups: Surface watcher status in tray UI, map system names ↔ IDs, feed combat digest into overlay HUD hints, and schedule a smoke run with live log files.
 
 ### Launch steps (reference)
 1. `cmake --build build --config Release --target ef_overlay_helper ef_overlay_injector ef_overlay_module`

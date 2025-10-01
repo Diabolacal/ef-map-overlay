@@ -2,6 +2,13 @@
 
 # EF-Map Game Overlay Initiative
 
+## Sync Checklist (when updating this plan)
+1. Modify this file and the `EF-Map-main` mirror in the same change set.
+2. Confirm language, tables, and dates match exactly between repositories (diff side-by-side if needed).
+3. Log roadmap shifts in both decision logs with matching titles and ISO dates so history stays linked.
+4. Note any cross-repo code implications in your status update to steer reviewers toward dependent files.
+
+
 ## 1. Purpose
 - Provide an in-game overlay for EVE Frontier that surfaces a focused subset of EF Map data (initially routing information).
 - Preserve the existing web app while enabling players to summon an overlay on demand without restarting the game client.
@@ -36,10 +43,11 @@
 - **Custom protocol** `ef-overlay://attach?session=<token>` for explicit actions from the browser.
 - **Local HTTP API** `http://127.0.0.1:<port>/status`, `/attach`, `/dismiss` for health checks and richer commands.
 
-## 6. Progress Summary (2025-09-27)
+## 6. Progress Summary (2025-10-01)
 - ✅ **Helper + injector MVP** – C++ helper boots, exposes HTTP API, launches overlay smoke script, injects DX12 module with hotkey toggle.
 - ✅ **DX12 overlay hook** – Swap-chain hook renders ImGui window, handles input capture (F8 toggle, drag/move, edge resize) without impacting gameplay.
 - ✅ **Automation** – PowerShell smoke script coordinates helper launch, payload post, and DLL injection for quick manual validation.
+- ✅ **Overlay state v2 schema + event queue** – Shared-memory schema updated with player marker, highlights, camera pose, HUD hints, follow flag; overlay <-> helper event ring buffer published via shared memory + HTTP drain endpoint for testing.
 - ▢ **Installer & signing** – Deferred until we stabilize feature set; helper currently launched manually.
 - ▢ **Browser CTA** – Web → helper bridge still manual; custom protocol & detection flow to be designed.
 
@@ -48,13 +56,23 @@ Focus: transform the overlay from a text HUD into a native starfield view synchr
 
 > **Guiding principle:** the overlay should complement, not clone, the browser app. Prioritize context-aware cues (live system updates, safety alerts, quick actions) that keep pilots in-game without alt-tabbing. Multi-monitor users already have full EF-Map; our differentiator is immediacy and automation tied to game state.
 
+### 7.0 Helper runtime UX shell *(new priority)*
+Deliver a lightweight tray experience around the existing helper runtime so operators can launch, monitor, and control the overlay without touching console windows.
+
+1. **Runtime extraction** – Factor current helper process control into a reusable `HelperRuntime` that can be driven by both console and tray entry points.
+2. **Tray UI scaffold** – Add a notification-area app with start/stop, inject, and "post sample state" commands, plus status indicator for overlay attachment and event activity.
+3. **Smoke tooling refresh** – Update `tools/overlay_smoke.ps1` to launch the tray shell automatically and exercise sample payload + injection flows.
+4. **Diagnostics hooks** – Surface quick links for logs/config folders and report last error in the tray tooltip to simplify manual testing.
+
+> Packaging/signing remain deferred; this milestone ships a developer-quality shell only, ensuring future features (log watcher, event bridge) have a visible home.
+
 ### 7.1 Data & messaging contracts
 1. **Overlay state v2 spec** *(EF-Map-main & helper)*
-   - Expand `overlay_state` schema with camera pose, highlighted systems, player marker, and UI hints.
-   - Define binary layout (size, versioning) for shared-memory payloads; budget for larger textures/buffers.
+   - ✅ Schema expanded with camera pose, player marker, highlights, HUD hints, follow flag, and active node tracking.
+   - ✅ Shared-memory payload version bumped to v2 with parser/serializer coverage.
 2. **Overlay ↔ helper events** *(helper & overlay)*
-   - Add event queue (shared memory or named pipe) for overlay-generated interactions (button clicks, text submit).
-   - Helper exposes `/overlay/event` endpoint (HTTP/WebSocket) to forward events to the browser with session auth.
+   - ✅ Shared-memory ring buffer publishes overlay-generated events; helper polls and exposes `/overlay/events` for downstream consumers.
+   - ⏳ Wire helper-to-browser forwarding (HTTP/WebSocket) and auth story for event delivery into EF-Map web app.
 
 ### 7.2 Rendering pipeline
 3. **Star catalog asset** *(EF-Map-main tooling)*
@@ -67,28 +85,24 @@ Focus: transform the overlay from a text HUD into a native starfield view synchr
    - Build ImGui panel with buttons/toggles for follow-mode, overlay opacity, route step actions.
    - Confirm focus handling (keyboard navigation, text input) and end-to-end event delivery back to the web app.
 
-### 7.3 Live data inputs
+### 7.3 Live data inputs & telemetry
 6. **Game log watcher** *(helper)*
-   - Monitor EVE Frontier gamelog directory, parse system-change lines, resolve to canonical IDs.
-   - Publish player location to overlay state (optional toggle) and propagate to EF-Map web client when enabled.
-   - Evaluate additional log sources (chat/local intel) for high-value alerts without overwhelming players.
-7. **Browser integration** *(EF-Map-main)*
+   - Monitor the Frontier gamelog directory (handle rotation), parse system-change lines, and resolve system names to canonical EF identifiers.
+   - Publish player location into the overlay state (opt-in toggle), flush updates through the shared memory channel, and fan out to the EF-Map web client via the event bridge.
+   - Harden against noise (chat/combat spam), missing logs, and concurrent clients; document fallback behaviour when logging is disabled.
+7. **Combat telemetry overlay** *(helper & overlay)*
+   - Tail combat logs to aggregate inbound/outbound DPS in rolling windows and surface quick-glance charts inside the overlay.
+   - Provide ImGui-based gauges/graphs, reset heuristics (dock, jump), and privacy controls for pilots who opt out.
+   - Reuse the watcher infrastructure for alerting hooks (e.g., spike detection) without blocking the main render thread.
+8. **Browser integration** *(EF-Map-main)*
    - Detect helper availability, expose “Open in overlay” CTA, push state updates via HTTP/WebSocket.
    - Handle overlay events (e.g., mark waypoint done) and refresh UI accordingly.
 
 ### 7.4 Packaging & UX (deferred until feature complete)
-8. **Tray application & installer** *(helper)*
-   - Wrap helper services in tray UI (start/stop overlay, enable log tracking, configure shortcuts).
-   - Ship MSI/MSIX installer with Authenticode signing and auto-update channel.
-   - Provide per-display profiles (single vs multi-monitor) so overlay defaults match player setups.
-
-## 8. Tooling & Tech Stack
-- Language: C++20 for DLL & helper core (optionally C# for helper UI via WinUI 3).
-- Hooking: MinHook or Microsoft Detours (DX12 friendly).
-- UI: ImGui (prototype) → evaluate Ultralight/CEF for HTML rendering.
-- Installer: WiX Toolset (MSI) or MSIX + self-updater (Squirrel/Electron-builder) later.
-- Signing: OV/EV Authenticode certificate via DigiCert/Sectigo.
-- Logging: spdlog / ETW for DLL; helper log file under `%LOCALAPPDATA%/EFOverlay`.
+9. **Installer & production tray polish** *(helper)*
+   - Convert the developer tray shell into a signed distribution (MSI/MSIX) once core features stabilize.
+   - Layer in auto-update, first-run guidance, and per-display profiles for end users.
+   - Fold settings panes (hotkeys, log watcher toggles) into the tray UI once the underlying capabilities are complete.
 
 ## 8. Tooling & Tech Stack
 - Language: C++20 for DLL & helper core (optionally C# for helper UI via WinUI 3).
@@ -110,13 +124,15 @@ Focus: transform the overlay from a text HUD into a native starfield view synchr
 ## 10. Open Questions
 - Preferred helper UI framework (WinUI vs native Win32).
 - Should overlay auto-attach when EF launches or stay opt-in per session?
-- Long-term plan for delivering overlay UI (ImGui vs HTML to texture).
+- Long-term plan for delivering overlay UI (ImGui vs HTML to texture). Investigate HTML embedding cautiously (WebView2/CEF carry large footprints and potential anti-cheat scrutiny) once native renderer is stable.
 - Deployment pipeline hosting (GitHub Releases vs custom CDN).
 - How to synchronize route data securely (JWT token exchange? local ephemeral key?).
 
 ## 11. Next Steps
-1. Finalize overlay state v2 schema & event channel contract (EF-Map-main + helper).
-2. Implement star catalog export and native renderer spike (overlay repo).
-3. Prototype helper log watcher + location toggle.
-4. Design browser CTA & helper discovery flow; mirror plan updates in `EF-Map-main`.
-5. Revisit packaging milestone once native rendering & event loop prove stable.
+1. Ship the helper tray shell MVP (runtime extraction, tray UI, smoke tooling refresh).
+2. Prototype the helper log watcher + location toggle, exposing status through the tray.
+3. Bridge helper event queue to EF-Map web client once the tray/log watcher are stable.
+4. Stand up the combat telemetry overlay using the shared watcher pipeline.
+5. Implement star catalog export and native renderer spike (overlay repo).
+6. Design browser CTA & helper discovery flow; mirror plan updates in `EF-Map-main`.
+7. Revisit packaging milestone once native rendering & event loop prove stable.

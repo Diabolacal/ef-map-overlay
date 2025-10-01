@@ -3,7 +3,8 @@ param(
     [string]$TargetHost = "127.0.0.1",
     [int]$Port = 38765,
     [switch]$SkipPayload,
-    [switch]$DetachHelper
+    [switch]$DetachHelper,
+    [switch]$UseTray
 )
 
 $ErrorActionPreference = "Stop"
@@ -19,6 +20,7 @@ if (-not $PSBoundParameters.ContainsKey('Port') -and $env:EF_OVERLAY_PORT) {
     }
 }
 $helperExe = Join-Path $repoRoot "build/src/helper/Release/ef-overlay-helper.exe"
+$trayExe = Join-Path $repoRoot "build/src/helper/Release/ef-overlay-tray.exe"
 $injectorExe = Join-Path $repoRoot "build/src/injector/Release/ef-overlay-injector.exe"
 $dllPath = Join-Path $repoRoot "build/src/overlay/Release/ef-overlay.dll"
 
@@ -34,10 +36,28 @@ if (!(Test-Path $dllPath)) {
 
 Write-Host "Starting overlay smoke test..."
 Write-Host "Helper   : $helperExe"
+if (Test-Path $trayExe) {
+    Write-Host "Tray     : $trayExe"
+}
 Write-Host "Injector : $injectorExe"
 Write-Host "DLL      : $dllPath"
 
-if ($DetachHelper) {
+if ($PSBoundParameters.ContainsKey('UseTray')) {
+    $useTray = $UseTray.IsPresent
+} else {
+    $useTray = Test-Path $trayExe
+}
+
+if ($useTray -and !(Test-Path $trayExe)) {
+    Write-Warning "Tray executable not found; falling back to console helper."
+    $useTray = $false
+}
+
+if ($useTray) {
+    Write-Host "Launching tray helper shell..."
+    $helperProcess = Start-Process -FilePath $trayExe -WorkingDirectory (Split-Path $trayExe) -WindowStyle Hidden -PassThru
+    Start-Sleep -Seconds 2
+} elseif ($DetachHelper) {
     Write-Host "Launching helper in a separate console window..."
     $helperProcess = Start-Process -FilePath $helperExe -WorkingDirectory (Split-Path $helperExe) -PassThru
 } else {

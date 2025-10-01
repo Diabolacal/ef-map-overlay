@@ -1,4 +1,5 @@
-#include "helper_server.hpp"
+#include "event_channel.hpp"
+#include "helper_runtime.hpp"
 #include "overlay_schema.hpp"
 #include "protocol_registration.hpp"
 
@@ -7,10 +8,12 @@
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 
 #include <httplib.h>
 #include <nlohmann/json.hpp>
@@ -343,8 +346,9 @@ namespace
         return false;
     }
 
-    void apply_command(HelperServer& server, const UriCommand& command)
+    void apply_command(HelperRuntime& runtime, const UriCommand& command)
     {
+        auto& server = runtime.server();
         if (command.action == "overlay-state" && command.payload)
         {
             try
@@ -443,30 +447,37 @@ int wmain(int argc, wchar_t* argv[])
         deferredCommand = std::move(parsed.value());
     }
 
-    HelperServer server(host, port, token);
-    if (!server.start())
+    HelperRuntime::Config runtimeConfig;
+    runtimeConfig.host = host;
+    runtimeConfig.port = port;
+    runtimeConfig.token = token;
+    runtimeConfig.executableDirectory = std::filesystem::path(get_executable_path()).parent_path();
+
+    HelperRuntime runtime(std::move(runtimeConfig));
+    if (!runtime.start())
     {
         spdlog::error("Unable to start helper server on {}:{}", host, port);
         spdlog::shutdown();
         return 1;
     }
 
+    const auto& server = runtime.server();
+
     spdlog::info("Helper HTTP API available at http://{}:{}{}", host, port, server.requiresAuth() ? " (auth required)" : "");
 
     if (deferredCommand)
     {
-        apply_command(server, *deferredCommand);
+        apply_command(runtime, *deferredCommand);
     }
 
     spdlog::info("Press Ctrl+C to shut down.");
-
     while (is_running())
     {
-        std::this_thread::sleep_for(std::chrono::seconds(1));
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
     spdlog::info("Shutdown signal received; stopping server...");
-    server.stop();
+    runtime.stop();
 
     spdlog::info("Helper terminated cleanly.");
     spdlog::shutdown();
