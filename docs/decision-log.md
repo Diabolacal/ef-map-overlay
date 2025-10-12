@@ -1,5 +1,23 @@
 <!-- Overlay decision log created 2025-09-26. Mirror significant cross-repo events with `EF-Map-main/docs/decision-log.md` (sibling repository) and include a `Cross-repo` note per entry when applicable. -->
 
+## 2025-10-12 – Release smoke test (helper + injector)
+- Goal: Validate the end-to-end overlay flow (helper HTTP API, shared-memory bridge, injector, in-game rendering) using the refreshed star catalog data.
+- Files: docs only (`README.md`).
+- Diff: README updated to document the canonical EVE Frontier process name `exefile.exe` and revised injection instructions.
+- Risk: low (documentation + runtime validation).
+- Gates: build ✅ (Release artifacts from same session) | tests ⚪ (no new code) | smoke ✅ (helper state + in-game overlay screenshot).
+- Cross-repo: Informational only; no `EF-Map-main` changes required.
+- Follow-ups: Replace debug ImGui panel with actual map visuals, script helper shutdown for automated runs, and schedule the next smoke once log watcher routes feed the overlay.
+
+## 2025-10-12 – Helper heartbeat + overlay auto-hide
+- Goal: Hide the in-game overlay automatically when the helper stops (graceful exit or crash) and revive it when the heartbeat resumes.
+- Files: `src/shared/overlay_schema.{hpp,cpp}`, `src/helper/helper_server.{hpp,cpp}`, `src/helper/helper_runtime.cpp`, `src/helper/log_watcher.cpp`, `src/overlay/overlay_renderer.{hpp,cpp}`, `tests/overlay_tests.cpp`, `README.md`.
+- Diff: ~+220/−40 across schema, helper, renderer, tests, and docs.
+- Risk: medium (touches shared-memory schema and injected render path).
+- Gates: build ✅ (`cmake --build build --config Release`) | tests ✅ (`ctest -C Release --output-on-failure`) | smoke ✅ (helper forced-stop then restart in live client auto-hid and auto-showed overlay).
+- Cross-repo: None (heartbeat metadata is overlay-only at this stage).
+- Follow-ups: Re-run in-game smoke with the new DLL, monitor heartbeat timeout (5s) during live play, and surface heartbeat status in the upcoming helper tray UI.
+
 ## 2025-10-12 – Camera-aligned starfield + route polyline
 - Goal: Align the DX12 starfield with helper-provided camera pose and render live route polylines so the in-game overlay mirrors EF-Map navigation.
 - Files: `src/overlay/starfield_renderer.{hpp,cpp}`, `src/overlay/overlay_hook.cpp`.

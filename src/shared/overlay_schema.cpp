@@ -74,6 +74,22 @@ namespace overlay
             vec.z = value.at(2).get<float>();
             return vec;
         }
+
+        std::uint64_t read_uint64(const nlohmann::json& obj, const char* key, std::uint64_t default_value)
+        {
+            if (!obj.contains(key))
+            {
+                return default_value;
+            }
+
+            const auto& value = obj.at(key);
+            if (!value.is_number_unsigned())
+            {
+                throw std::invalid_argument(std::string{"Field '"} + key + "' must be an unsigned integer");
+            }
+
+            return value.get<std::uint64_t>();
+        }
     }
 
     OverlayState parse_overlay_state(const nlohmann::json& json)
@@ -89,6 +105,8 @@ namespace overlay
         {
             state.generated_at_ms = json.at("generated_at_ms").get<std::uint64_t>();
         }
+
+        state.heartbeat_ms = read_uint64(json, "heartbeat_ms", state.generated_at_ms);
 
         if (!json.contains("route"))
         {
@@ -197,10 +215,22 @@ namespace overlay
             state.active_route_node_id = json.at("active_route_node_id").get<std::string>();
         }
 
+        state.source_online = read_bool(json, "source_online", true);
+
+        if (state.heartbeat_ms == 0)
+        {
+            state.heartbeat_ms = state.generated_at_ms;
+        }
+
         if (state.generated_at_ms == 0)
         {
             state.generated_at_ms = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count());
+        }
+
+        if (state.heartbeat_ms == 0)
+        {
+            state.heartbeat_ms = state.generated_at_ms;
         }
 
         return state;
@@ -211,6 +241,7 @@ namespace overlay
         nlohmann::json json;
         json["version"] = state.version;
         json["generated_at_ms"] = state.generated_at_ms;
+        json["heartbeat_ms"] = state.heartbeat_ms == 0 ? state.generated_at_ms : state.heartbeat_ms;
 
         nlohmann::json route = nlohmann::json::array();
         route.get_ref<nlohmann::json::array_t&>().reserve(state.route.size());
@@ -298,6 +329,8 @@ namespace overlay
         {
             json["active_route_node_id"] = *state.active_route_node_id;
         }
+
+        json["source_online"] = state.source_online;
 
         return json;
     }

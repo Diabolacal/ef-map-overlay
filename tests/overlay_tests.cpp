@@ -55,12 +55,14 @@ namespace
     {
         OverlayState state;
         state.generated_at_ms = 123456789ULL;
+        state.heartbeat_ms = state.generated_at_ms;
         state.route = {
             RouteNode{"30000001", "Tanoo", 0.0, false},
             RouteNode{"30000003", "Mahnna", 3.47, true}
         };
         state.notes = std::string{"Sample payload"};
         state.follow_mode_enabled = true;
+        state.source_online = true;
         state.player_marker = overlay::PlayerMarker{ "30000003", "Mahnna", false };
         overlay::HighlightedSystem highlight;
         highlight.system_id = "30000005";
@@ -107,6 +109,16 @@ int main()
         if (!restored.notes.has_value() || restored.notes->compare(*state.notes) != 0)
         {
             throw std::runtime_error("notes did not round-trip");
+        }
+
+        if (restored.heartbeat_ms != state.heartbeat_ms)
+        {
+            throw std::runtime_error("heartbeat did not round-trip");
+        }
+
+        if (!restored.source_online)
+        {
+            throw std::runtime_error("source_online flag expected true");
         }
     }, failures);
 

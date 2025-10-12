@@ -22,6 +22,12 @@ This repository contains the native helper application and DirectX 12 overlay co
 - Helper/overlay build systems: **C++20 / MSVC** via CMake (native end-to-end).
 - Automated tests: _TBD_ – plan unit/integration coverage alongside implementation.
 
+### Staying in sync with universe updates
+- Whenever the EF-Map-main universe dataset (`map_data_v2.db`) is regenerated, re-export the compact star catalog (`python tools/export_star_catalog.py` in the main repo) and copy the resulting `star_catalog_v1.*` files into this repository’s `data/` folder.
+- After copying, rebuild and run `ef_overlay_tests` to confirm the helper and overlay can parse the refreshed catalog before committing the updated binaries.
+- If the catalog schema or filename changes, adjust loader paths in `src/shared/star_catalog.*` and update documentation accordingly.
+- Monitor the main repo decision log for indexer/world address changes that may require helper configuration updates.
+
 ### Building (preview)
 The repository now includes an initial CMake scaffold for both the helper executable and overlay DLL. A minimal Windows toolchain (Visual Studio 2022 or recent MSVC Build Tools) is required.
 
@@ -78,24 +84,34 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:38765/overlay/state -Body $
 
 4. Start the EVE Frontier client (windowed mode is easiest for observation).
 
-5. Identify the process name or PID. Example command (replace the filter if the executable name differs):
+5. Identify the process name or PID. The retail EVE Frontier client runs as **`exefile.exe`**; the following command lists any active instances (adjust if CCP renames the binary in a future build):
 
 ```powershell
-Get-Process | Where-Object { $_.ProcessName -like "EVEFrontier*" } | Select-Object Id, ProcessName
+Get-Process -Name exefile -ErrorAction SilentlyContinue | Select-Object Id, ProcessName
 ```
 
-6. Inject the overlay DLL using the injector. Provide either the process name or PID and the absolute path to the freshly built `ef-overlay.dll`:
+6. Inject the overlay DLL using the injector. Provide either the process name (`exefile.exe`) or the specific PID and the absolute path to the freshly built `ef-overlay.dll`:
 
 ```powershell
 cd C:/ef-map-overlay/build/src/injector/Release
-.\ef-overlay-injector.exe EVEFrontier.exe C:/ef-map-overlay/build/src/overlay/Release/ef-overlay.dll
+.\ef-overlay-injector.exe exefile.exe C:/ef-map-overlay/build/src/overlay/Release/ef-overlay.dll
 ```
 
 	Successful injection prints `[info] Injection completed (PID=...)`. If you see access errors, confirm the shell is elevated and the DLL path exists.
 
 7. Tab back into the game client. The overlay should appear with the sample payload (version, timestamp, route summary). Interact with the game to ensure frame pacing feels normal.
 
-8. To validate teardown, close the game client. Confirm that no crash dialogs appear and that the helper process remains alive. Re-open the client and rerun the injector to repeat the cycle as needed.
+8. To validate teardown, close the game client. Confirm that no crash dialogs appear and that the helper process remains alive. Re-open the client and rerun the injector to repeat the cycle as needed. When the helper exits (cleanly or due to a crash) the overlay now auto-hides within ~5 seconds; relaunching the helper brings the window back automatically without pressing F8, though you still need to inject a fresh DLL after a client restart.
+
+9. (Optional) Exercise the helper heartbeat watchdog without restarting the game:
+
+```powershell
+taskkill /IM ef-overlay-helper.exe /F
+Start-Sleep -Seconds 6
+Start-Process -FilePath C:/ef-map-overlay/build/src/helper/Release/ef-overlay-helper.exe -WorkingDirectory C:/ef-map-overlay/build/src/helper/Release
+```
+
+	The overlay should disappear shortly after the helper stops and come back on its own once the helper is running again.
 
 During testing, keep the helper console visible for schema validation errors. For deeper diagnostics, attach a debugger or use Sysinternals DebugView to capture `OutputDebugString` messages emitted by the overlay module.
 

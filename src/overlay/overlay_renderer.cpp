@@ -30,6 +30,12 @@ namespace
         spdlog::set_pattern("[%H:%M:%S.%e] [%^%l%$] %v");
         spdlog::flush_on(spdlog::level::info);
     }
+
+    std::uint64_t now_ms()
+    {
+        const auto now = std::chrono::system_clock::now();
+        return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count());
+    }
 }
 
 OverlayRenderer& OverlayRenderer::instance()
@@ -97,6 +103,11 @@ void OverlayRenderer::resetState()
     lastError_.clear();
     lastUpdatedAtMs_ = 0;
     lastVersion_ = 0;
+    lastHeartbeatMs_ = 0;
+    lastSourceOnline_ = true;
+    autoHidden_.store(false);
+    autoHideReason_.clear();
+    restoreVisibleOnResume_ = false;
     eventWriterReady_.store(false);
 }
 
@@ -111,6 +122,8 @@ void OverlayRenderer::pollLoop()
         const auto snapshot = sharedReader_.read();
         if (snapshot)
         {
+            const auto currentTimeMs = now_ms();
+            constexpr std::uint64_t staleThresholdMs = 5000;
             std::lock_guard<std::mutex> lock(stateMutex_);
             if (snapshot->json_payload != lastPayload_)
             {
@@ -122,6 +135,48 @@ void OverlayRenderer::pollLoop()
                     lastError_.clear();
                     lastUpdatedAtMs_ = snapshot->updated_at_ms;
                     lastVersion_ = snapshot->version;
+                    lastHeartbeatMs_ = currentState_->heartbeat_ms == 0 ? snapshot->updated_at_ms : currentState_->heartbeat_ms;
+                    lastSourceOnline_ = currentState_->source_online;
+                    auto effectiveHeartbeat = lastHeartbeatMs_;
+                    if (effectiveHeartbeat == 0)
+                    {
+                        effectiveHeartbeat = snapshot->updated_at_ms;
+                    }
+
+                    const bool offline = !lastSourceOnline_;
+                    const bool stale = effectiveHeartbeat > 0 && currentTimeMs > effectiveHeartbeat && (currentTimeMs - effectiveHeartbeat) > staleThresholdMs;
+                    const char* reason = offline ? "helper offline" : "helper heartbeat stale";
+
+                    const bool currentlyHidden = autoHidden_.load();
+                    if (offline || stale)
+                    {
+                        if (!currentlyHidden)
+                        {
+                            restoreVisibleOnResume_ = visible_.load();
+                            if (restoreVisibleOnResume_)
+                            {
+                                visible_.store(false);
+                            }
+                            autoHidden_.store(true);
+                            autoHideReason_ = reason;
+                            spdlog::info("Overlay auto-hidden: {} (offline={}, stale={}, age={}ms)", autoHideReason_, offline, stale, effectiveHeartbeat == 0 ? 0 : (currentTimeMs - effectiveHeartbeat));
+                        }
+                        else
+                        {
+                            autoHideReason_ = reason;
+                        }
+                    }
+                    else if (currentlyHidden)
+                    {
+                        autoHidden_.store(false);
+                        autoHideReason_.clear();
+                        if (restoreVisibleOnResume_)
+                        {
+                            visible_.store(true);
+                        }
+                        restoreVisibleOnResume_ = false;
+                        spdlog::info("Overlay auto-hide cleared: helper heartbeat restored");
+                    }
                     spdlog::debug("Overlay state updated from shared memory (version={}, updated_at={})", lastVersion_, lastUpdatedAtMs_);
                 }
                 catch (const std::exception& ex)
@@ -131,7 +186,62 @@ void OverlayRenderer::pollLoop()
                     lastPayload_ = snapshot->json_payload;
                     lastUpdatedAtMs_ = snapshot->updated_at_ms;
                     lastVersion_ = snapshot->version;
+                    restoreVisibleOnResume_ = visible_.load();
+                    if (restoreVisibleOnResume_)
+                    {
+                        visible_.store(false);
+                    }
+                    autoHidden_.store(true);
+                    autoHideReason_ = "state parse failure";
                     spdlog::error("Failed to parse overlay state from shared memory: {}", ex.what());
+                }
+            }
+        }
+
+        {
+            const auto currentTimeMs = now_ms();
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            const std::uint64_t heartbeatCopy = lastHeartbeatMs_ == 0 ? lastUpdatedAtMs_ : lastHeartbeatMs_;
+            const bool haveState = currentState_.has_value();
+            if (haveState)
+            {
+                constexpr std::uint64_t staleThresholdMs = 5000;
+                const bool stale = heartbeatCopy > 0 && currentTimeMs > heartbeatCopy && (currentTimeMs - heartbeatCopy) > staleThresholdMs;
+                const bool offline = !lastSourceOnline_;
+                const char* reason = offline ? "helper offline" : "helper heartbeat stale";
+                const bool currentlyHidden = autoHidden_.load();
+
+                if (offline || stale)
+                {
+                    if (!currentlyHidden)
+                    {
+                        restoreVisibleOnResume_ = visible_.load();
+                        if (restoreVisibleOnResume_)
+                        {
+                            visible_.store(false);
+                        }
+                        autoHidden_.store(true);
+                        autoHideReason_ = reason;
+                        spdlog::info("Overlay auto-hidden (loop check): reason={}, age={}ms", autoHideReason_, heartbeatCopy == 0 ? 0 : (currentTimeMs - heartbeatCopy));
+                    }
+                    else
+                    {
+                        autoHideReason_ = reason;
+                    }
+                }
+                else if (currentlyHidden)
+                {
+                    if (autoHideReason_ != "state parse failure")
+                    {
+                        autoHidden_.store(false);
+                        autoHideReason_.clear();
+                        if (restoreVisibleOnResume_)
+                        {
+                            visible_.store(true);
+                        }
+                        restoreVisibleOnResume_ = false;
+                        spdlog::info("Overlay auto-hide cleared (loop check)");
+                    }
                 }
             }
         }
@@ -162,6 +272,11 @@ void OverlayRenderer::renderImGui()
     }
 
     if (!visible_.load())
+    {
+        return;
+    }
+
+    if (autoHidden_.load())
     {
         return;
     }

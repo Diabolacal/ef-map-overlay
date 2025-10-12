@@ -61,6 +61,7 @@ namespace overlay
     {
         int version = schema_version;
         std::uint64_t generated_at_ms = 0;
+        std::uint64_t heartbeat_ms = 0;
         std::vector<RouteNode> route;
         std::optional<std::string> notes;
         std::optional<PlayerMarker> player_marker;
@@ -69,6 +70,7 @@ namespace overlay
         std::vector<HudHint> hud_hints;
         bool follow_mode_enabled{false};
         std::optional<std::string> active_route_node_id;
+        bool source_online{true};
     };
 
     [[nodiscard]] OverlayState parse_overlay_state(const nlohmann::json& json);

@@ -17,6 +17,12 @@ namespace
     {
         return nlohmann::json{{"status", "error"}, {"message", message}};
     }
+
+    std::uint64_t now_ms()
+    {
+        const auto now = std::chrono::system_clock::now();
+        return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count());
+    }
 }
 
 HelperServer::HelperServer(std::string host, int port, std::string authToken)
@@ -74,6 +80,8 @@ bool HelperServer::start()
     startedAt_ = std::chrono::steady_clock::now();
     stoppedAt_ = startedAt_;
 
+    startHeartbeat();
+
     serverThread_ = std::thread([this]() {
     spdlog::info("Helper server listening on {}:{} (auth: {})", host_, port_, requireAuth_ ? "required" : "disabled");
         server_.listen_after_bind();
@@ -91,6 +99,8 @@ void HelperServer::stop()
     {
         return;
     }
+
+    stopHeartbeat();
 
     if (websocketHub_)
     {
@@ -162,20 +172,29 @@ bool HelperServer::authorize(const httplib::Request& req, httplib::Response& res
 
 bool HelperServer::ingestOverlayState(const overlay::OverlayState& state, std::size_t requestBytes, std::string source)
 {
-    const auto stateJson = overlay::serialize_overlay_state(state);
+    auto enriched = state;
+    const auto heartbeat = now_ms();
+    if (enriched.generated_at_ms == 0)
+    {
+        enriched.generated_at_ms = heartbeat;
+    }
+    enriched.heartbeat_ms = heartbeat;
+    enriched.source_online = true;
+
+    const auto stateJson = overlay::serialize_overlay_state(enriched);
     const auto serialized = stateJson.dump();
 
     {
         std::lock_guard<std::mutex> guard(overlayStateMutex_);
         latestOverlayState_ = serialized;
         latestOverlayStateJson_ = stateJson;
-        lastOverlayGeneratedAtMs_ = state.generated_at_ms;
+        lastOverlayGeneratedAtMs_ = enriched.generated_at_ms;
         lastOverlayAcceptedAt_ = std::chrono::system_clock::now();
     }
 
     hasOverlayState_.store(true);
 
-    const bool sharedOk = sharedMemoryWriter_.write(serialized, static_cast<std::uint32_t>(state.version), state.generated_at_ms);
+    const bool sharedOk = sharedMemoryWriter_.write(serialized, static_cast<std::uint32_t>(enriched.version), enriched.generated_at_ms);
     if (!sharedOk)
     {
         spdlog::warn("Overlay state accepted via {} but failed to publish to shared memory", source);
@@ -189,6 +208,119 @@ bool HelperServer::ingestOverlayState(const overlay::OverlayState& state, std::s
 
     spdlog::info("Overlay state accepted via {} ({} bytes)", std::move(source), static_cast<unsigned long long>(requestBytes));
     return true;
+}
+
+void HelperServer::publishOfflineState()
+{
+    if (!hasOverlayState_.load())
+    {
+        return;
+    }
+
+    std::string serialized;
+    nlohmann::json json;
+    std::uint32_t version = overlay::schema_version;
+    std::uint64_t generatedAt = 0;
+
+    {
+        std::lock_guard<std::mutex> guard(overlayStateMutex_);
+        if (latestOverlayState_.empty())
+        {
+            return;
+        }
+
+        json = latestOverlayStateJson_;
+        json["source_online"] = false;
+        json["heartbeat_ms"] = now_ms();
+        serialized = json.dump();
+        latestOverlayState_ = serialized;
+        latestOverlayStateJson_ = json;
+        if (json.contains("version"))
+        {
+            version = json.at("version").get<std::uint32_t>();
+        }
+        if (json.contains("generated_at_ms"))
+        {
+            generatedAt = json.at("generated_at_ms").get<std::uint64_t>();
+        }
+        lastOverlayGeneratedAtMs_ = generatedAt;
+        lastOverlayAcceptedAt_ = std::chrono::system_clock::now();
+    }
+
+    const bool sharedOk = sharedMemoryWriter_.write(serialized, version, generatedAt);
+    if (!sharedOk)
+    {
+        spdlog::warn("Failed to publish offline overlay state to shared memory");
+    }
+
+    if (websocketHub_)
+    {
+        nlohmann::json envelope{{"type", "overlay_state"}, {"state", json}};
+        websocketHub_->broadcastOverlayState(envelope);
+    }
+
+    spdlog::info("Overlay source marked offline");
+}
+
+void HelperServer::startHeartbeat()
+{
+    if (heartbeatRunning_.load())
+    {
+        return;
+    }
+
+    heartbeatRunning_.store(true);
+    heartbeatThread_ = std::thread([this]() {
+        while (heartbeatRunning_.load())
+        {
+            std::this_thread::sleep_for(heartbeatInterval_);
+            if (!hasOverlayState_.load())
+            {
+                continue;
+            }
+
+            std::string serialized;
+            std::uint32_t version = overlay::schema_version;
+            std::uint64_t generatedAt = 0;
+
+            {
+                std::lock_guard<std::mutex> guard(overlayStateMutex_);
+                if (latestOverlayState_.empty())
+                {
+                    continue;
+                }
+
+                latestOverlayStateJson_["heartbeat_ms"] = now_ms();
+                latestOverlayStateJson_["source_online"] = true;
+                serialized = latestOverlayStateJson_.dump();
+                latestOverlayState_ = serialized;
+                if (latestOverlayStateJson_.contains("version"))
+                {
+                    version = latestOverlayStateJson_.at("version").get<std::uint32_t>();
+                }
+                if (latestOverlayStateJson_.contains("generated_at_ms"))
+                {
+                    generatedAt = latestOverlayStateJson_.at("generated_at_ms").get<std::uint64_t>();
+                }
+                lastOverlayGeneratedAtMs_ = generatedAt;
+            }
+
+            const bool sharedOk = sharedMemoryWriter_.write(serialized, version, generatedAt);
+            if (!sharedOk)
+            {
+                spdlog::warn("Heartbeat publication failed to update shared memory");
+            }
+        }
+    });
+}
+
+void HelperServer::stopHeartbeat()
+{
+    heartbeatRunning_.store(false);
+    if (heartbeatThread_.joinable())
+    {
+        heartbeatThread_.join();
+    }
 }
 
 void HelperServer::configureRoutes()

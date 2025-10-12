@@ -38,6 +38,7 @@ private:
     std::atomic_bool initialized_{false};
     std::atomic_bool running_{false};
     std::atomic_bool visible_{true};
+    std::atomic_bool autoHidden_{false};
     std::thread pollThread_;
     HMODULE module_{nullptr};
 
@@ -50,4 +51,8 @@ private:
     std::string lastError_;
     std::uint64_t lastUpdatedAtMs_{0};
     std::uint32_t lastVersion_{0};
+    std::uint64_t lastHeartbeatMs_{0};
+    bool lastSourceOnline_{true};
+    std::string autoHideReason_;
+    bool restoreVisibleOnResume_{false};
 };

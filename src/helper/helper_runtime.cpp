@@ -130,6 +130,8 @@ void HelperRuntime::stop()
         logWatcher_->stop();
     }
 
+    server_.publishOfflineState();
+
     stopRequested_.store(true);
     eventCv_.notify_all();
 
@@ -321,6 +323,7 @@ overlay::OverlayState HelperRuntime::buildSampleOverlayState() const
 {
     overlay::OverlayState state;
     state.generated_at_ms = now_ms();
+    state.heartbeat_ms = state.generated_at_ms;
     state.notes = "Tray sample route";
 
     state.route = {
@@ -389,6 +392,7 @@ overlay::OverlayState HelperRuntime::buildSampleOverlayState() const
 
     state.follow_mode_enabled = true;
     state.active_route_node_id = state.route.size() > 1 ? std::optional<std::string>{state.route[1].system_id} : std::nullopt;
+    state.source_online = true;
 
     return state;
 }

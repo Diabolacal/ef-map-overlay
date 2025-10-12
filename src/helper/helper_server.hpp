@@ -37,6 +37,9 @@ public:
     const std::string& authToken() const noexcept { return authToken_; }
 
     bool ingestOverlayState(const overlay::OverlayState& state, std::size_t requestBytes, std::string source);
+    void publishOfflineState();
+    void startHeartbeat();
+    void stopHeartbeat();
     void recordOverlayEvents(std::vector<overlay::OverlayEvent> events, std::uint32_t dropped);
 
     struct StarCatalogSummary
@@ -109,6 +112,10 @@ private:
 
     std::unique_ptr<helper::ws::HelperWebSocketHub> websocketHub_;
     int websocketPort_{0};
+
+    std::atomic_bool heartbeatRunning_{false};
+    std::thread heartbeatThread_;
+    std::chrono::milliseconds heartbeatInterval_{std::chrono::milliseconds{2000}};
 
     mutable std::mutex catalogMutex_;
     StarCatalogSummary starCatalogSummary_{};

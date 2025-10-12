@@ -741,7 +741,9 @@ namespace helper::logs
     {
         overlay::OverlayState state;
         state.generated_at_ms = now_ms();
+    state.heartbeat_ms = state.generated_at_ms;
         state.follow_mode_enabled = true;
+    state.source_online = true;
 
         if (snapshot.location.has_value())
         {
