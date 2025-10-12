@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <utility>
 #include <sstream>
+#include <system_error>
 
 namespace
 {
@@ -111,6 +112,8 @@ bool HelperRuntime::start()
         lastLogWatcherStatus_ = logWatcher_->status();
     }
 
+    loadStarCatalog();
+
     spdlog::info("Helper runtime started ({}:{})", server_.host(), server_.port());
     return true;
 }
@@ -188,6 +191,25 @@ HelperRuntime::Status HelperRuntime::getStatus() const
         else
         {
             status.logWatcherRunning = false;
+        }
+
+        status.starCatalogPath = starCatalogPath_;
+        status.starCatalogError = starCatalogError_;
+        if (starCatalog_)
+        {
+            status.starCatalogLoaded = true;
+            status.starCatalogVersion = starCatalog_->version;
+            status.starCatalogRecords = static_cast<std::uint32_t>(starCatalog_->records.size());
+            status.starCatalogBboxMin = starCatalog_->bbox_min;
+            status.starCatalogBboxMax = starCatalog_->bbox_max;
+        }
+        else
+        {
+            status.starCatalogLoaded = false;
+            status.starCatalogVersion = 0;
+            status.starCatalogRecords = 0;
+            status.starCatalogBboxMin = overlay::Vec3f{};
+            status.starCatalogBboxMax = overlay::Vec3f{};
         }
     }
 
@@ -413,4 +435,78 @@ void HelperRuntime::setInjectionMessage(std::string message, bool success)
             lastError_ = lastInjectionMessage_;
         }
     }
+}
+
+void HelperRuntime::loadStarCatalog()
+{
+    HelperServer::StarCatalogSummary summary;
+
+    const auto catalogPath = resolveArtifact(std::filesystem::path(L"data/star_catalog_v1.bin"));
+    summary.path = catalogPath;
+
+    std::optional<overlay::StarCatalog> loadedCatalog;
+
+    if (catalogPath.empty())
+    {
+        summary.error = "Catalog path could not be resolved";
+    }
+    else
+    {
+        std::error_code ec;
+        const bool exists = std::filesystem::exists(catalogPath, ec);
+        if (ec)
+        {
+            summary.error = "Catalog path check failed: " + ec.message();
+        }
+        else if (!exists)
+        {
+            summary.error = "Catalog file not found: " + catalogPath.string();
+        }
+        else
+        {
+            try
+            {
+                auto catalog = overlay::load_star_catalog_from_file(catalogPath);
+                summary.loaded = true;
+                summary.version = catalog.version;
+                summary.record_count = static_cast<std::uint32_t>(catalog.records.size());
+                summary.bbox_min = catalog.bbox_min;
+                summary.bbox_max = catalog.bbox_max;
+                loadedCatalog = std::move(catalog);
+            }
+            catch (const std::exception& ex)
+            {
+                summary.error = ex.what();
+            }
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> guard(statusMutex_);
+        starCatalogPath_ = catalogPath;
+        starCatalogError_ = summary.error;
+        if (loadedCatalog)
+        {
+            starCatalog_ = std::move(*loadedCatalog);
+        }
+        else
+        {
+            starCatalog_.reset();
+        }
+    }
+
+    if (summary.loaded)
+    {
+        spdlog::info("Star catalog loaded from {} (records={}, version={})",
+            catalogPath.string(),
+            summary.record_count,
+            summary.version);
+    }
+    else
+    {
+        const auto& message = summary.error.empty() ? std::string{"Unknown error"} : summary.error;
+        spdlog::warn("Star catalog unavailable: {}", message);
+    }
+
+    server_.updateStarCatalogSummary(std::move(summary));
 }

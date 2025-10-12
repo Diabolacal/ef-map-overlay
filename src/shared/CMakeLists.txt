@@ -4,6 +4,7 @@ add_library(${target_name}
     overlay_schema.cpp
     event_channel.cpp
     shared_memory_channel.cpp
+    star_catalog.cpp
 )
 
 target_include_directories(${target_name}

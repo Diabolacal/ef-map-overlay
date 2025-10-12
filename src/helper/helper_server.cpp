@@ -300,6 +300,46 @@ void HelperServer::configureRoutes()
         res.status = 200;
     });
 
+    server_.Get("/overlay/catalog", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!authorize(req, res))
+        {
+            return;
+        }
+
+        const auto summary = getStarCatalogSummary();
+
+        nlohmann::json payload{
+            {"loaded", summary.loaded},
+            {"version", summary.version},
+            {"record_count", summary.record_count}
+        };
+
+        if (!summary.path.empty())
+        {
+            payload["path"] = summary.path.string();
+        }
+        else
+        {
+            payload["path"] = nullptr;
+        }
+
+        if (summary.loaded)
+        {
+            payload["bbox"] = {
+                {"min", {summary.bbox_min.x, summary.bbox_min.y, summary.bbox_min.z}},
+                {"max", {summary.bbox_max.x, summary.bbox_max.y, summary.bbox_max.z}}
+            };
+        }
+
+        if (!summary.error.empty())
+        {
+            payload["error"] = summary.error;
+        }
+
+        res.set_content(payload.dump(), application_json);
+        res.status = summary.loaded ? 200 : 503;
+    });
+
     server_.Post("/overlay/state", [this](const httplib::Request& req, httplib::Response& res) {
         if (!authorize(req, res))
         {
@@ -420,4 +460,16 @@ HelperServer::OverlayStateStats HelperServer::getOverlayStateStats() const
         }
     }
     return stats;
+}
+
+void HelperServer::updateStarCatalogSummary(StarCatalogSummary summary)
+{
+    std::lock_guard<std::mutex> guard(catalogMutex_);
+    starCatalogSummary_ = std::move(summary);
+}
+
+HelperServer::StarCatalogSummary HelperServer::getStarCatalogSummary() const
+{
+    std::lock_guard<std::mutex> guard(catalogMutex_);
+    return starCatalogSummary_;
 }

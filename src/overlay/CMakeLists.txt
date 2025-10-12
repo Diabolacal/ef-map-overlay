@@ -4,6 +4,7 @@ add_library(${target_name} SHARED
     dllmain.cpp
     overlay_renderer.cpp
     overlay_hook.cpp
+    starfield_renderer.cpp
 )
 
 if(MSVC)
@@ -24,6 +25,7 @@ target_link_libraries(${target_name}
     PRIVATE
         kernel32
         user32
+        d3dcompiler
     minhook::minhook
     imgui
     spdlog::spdlog

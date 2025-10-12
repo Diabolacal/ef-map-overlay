@@ -1,5 +1,32 @@
 <!-- Overlay decision log created 2025-09-26. Mirror significant cross-repo events with `EF-Map-main/docs/decision-log.md` (sibling repository) and include a `Cross-repo` note per entry when applicable. -->
 
+## 2025-10-12 – Camera-aligned starfield + route polyline
+- Goal: Align the DX12 starfield with helper-provided camera pose and render live route polylines so the in-game overlay mirrors EF-Map navigation.
+- Files: `src/overlay/starfield_renderer.{hpp,cpp}`, `src/overlay/overlay_hook.cpp`.
+- Diff: ~+520/−180 lines (constant-buffered renderer, dynamic route buffer, hook wiring).
+- Risk: medium (new GPU constant buffer updates and dynamic route uploads in injected process).
+- Gates: build ✅ (`cmake --build build --config Debug`) | tests ✅ (`build/tests/Debug/ef_overlay_tests.exe`).
+- Cross-repo: Documented in `EF-Map-main/docs/decision-log.md` (2025-10-12 – Overlay camera-aligned renderer sync).
+- Follow-ups: Add waypoint markers/selection glow, profile GPU/frame impact in live sessions, and expose renderer health metrics in helper tray diagnostics.
+
+## 2025-10-02 – Native starfield renderer spike (DX12 point cloud)
+- Goal: Render the EF-Map star catalog inside the overlay using a lightweight DX12 pipeline (point sprites + additive blend) as the baseline for native visuals.
+- Files: `src/overlay/starfield_renderer.{hpp,cpp}`, `src/overlay/overlay_hook.cpp`, `src/overlay/CMakeLists.txt`, `src/overlay/overlay_renderer.hpp` (indirect include), build regeneration.
+- Diff: +2 new overlay source files (~420 LoC) plus ~+140/−15 adjustments across the DX12 hook and build wiring.
+- Risk: medium (new GPU pipeline + runtime asset load in injected process).
+- Gates: build ✅ (`cmake --build build --config Debug --target ef_overlay_tests`) | tests ✅ (`ctest --test-dir build -C Debug --output-on-failure`).
+- Cross-repo: EF-Map main initiative plan updated (2025-10-02 – Native starfield renderer spike) to mark milestone progress.
+- Follow-ups: Integrate overlay camera transforms, render route polylines from shared state, tune colors/brightness for parity with web map, and profile GPU cost in live client sessions.
+
+## 2025-10-02 – Star catalog asset loader + helper metadata
+- Goal: Load the exported EF-Map star catalog inside the helper runtime, expose catalog metadata via HTTP/status APIs, and add a shared parser + tests so the overlay can consume the binary format.
+- Files: `src/shared/star_catalog.{hpp,cpp}`, `src/shared/CMakeLists.txt`, `tests/overlay_tests.cpp`, `src/helper/helper_runtime.{hpp,cpp}`, `src/helper/helper_server.{hpp,cpp}`, `CMakeLists.txt` (indirect via shared lib), `build` regeneration (cmake configure).
+- Diff: +2 new source files (~310 LoC) plus ~+190/−20 changes across helper runtime/server, tests, and build wiring.
+- Risk: medium (helper startup now depends on catalog asset; new HTTP surface for metadata).
+- Gates: build ✅ (`cmake --build build --config Debug --target ef_overlay_tests`) | tests ✅ (`ctest --test-dir build -C Debug --output-on-failure`).
+- Cross-repo: EF-Map main decision log (2025-10-02 – Star catalog exporter + overlay asset copy).
+- Follow-ups: Feed catalog into the DX12 renderer, extend asset format with stargate adjacency once overlay requirements stabilize, and surface catalog telemetry in the upcoming tray UI.
+
 ## 2025-10-01 – Helper WebSocket hub + EF-Map bridge handshake
 - Goal: Promote the helper’s WebSocket hub (real-time overlay state/events) and finalize the browser handshake so EF-Map consumes live payloads without HTTP polling.
 - Files: `src/helper/helper_websocket.{hpp,cpp}`, `src/helper/helper_server.{hpp,cpp}`, `cmake/Dependencies.cmake`, `src/helper/CMakeLists.txt`, helper docs (minor).

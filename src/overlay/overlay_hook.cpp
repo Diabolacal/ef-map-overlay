@@ -1,9 +1,11 @@
 #include "overlay_hook.hpp"
 
 #include "overlay_renderer.hpp"
+#include "starfield_renderer.hpp"
 
 #include <algorithm>
 #include <atomic>
+#include <string>
 #include <vector>
 
 #include <MinHook.h>
@@ -127,6 +129,7 @@ namespace
 
     cleanupRenderTargets();
     restoreWindowProc();
+    StarfieldRenderer::instance().shutdown();
         g_frames.clear();
         g_commandList.Reset();
         g_srvHeap.Reset();
@@ -538,6 +541,11 @@ namespace
             return false;
         }
 
+        if (!StarfieldRenderer::instance().initialize(g_device.Get(), desc.BufferDesc.Format))
+        {
+            spdlog::warn("initializeImgui: starfield renderer not ready");
+        }
+
         g_imguiReady = true;
         log_info("initializeImgui: ImGui DX12 backend initialized");
         return true;
@@ -629,6 +637,14 @@ namespace
         g_commandList->ResourceBarrier(1, &barrier);
 
         g_commandList->OMSetRenderTargets(1, &frame.descriptor, FALSE, nullptr);
+
+    std::uint32_t stateVersion = 0;
+    std::uint64_t stateTimestamp = 0;
+    std::string stateError;
+    auto latestState = OverlayRenderer::instance().latestState(stateVersion, stateTimestamp, stateError);
+    const overlay::OverlayState* statePtr = latestState ? &*latestState : nullptr;
+
+    StarfieldRenderer::instance().render(g_commandList.Get(), width, height, statePtr);
 
     ID3D12DescriptorHeap* heaps[] = { g_srvHeap.Get() };
     g_commandList->SetDescriptorHeaps(1, heaps);

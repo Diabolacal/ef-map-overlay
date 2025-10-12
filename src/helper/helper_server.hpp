@@ -3,6 +3,7 @@
 #include <atomic>
 #include <chrono>
 #include <deque>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -37,6 +38,20 @@ public:
 
     bool ingestOverlayState(const overlay::OverlayState& state, std::size_t requestBytes, std::string source);
     void recordOverlayEvents(std::vector<overlay::OverlayEvent> events, std::uint32_t dropped);
+
+    struct StarCatalogSummary
+    {
+        bool loaded{false};
+        std::filesystem::path path;
+        std::uint16_t version{0};
+        std::uint32_t record_count{0};
+        overlay::Vec3f bbox_min{};
+        overlay::Vec3f bbox_max{};
+        std::string error;
+    };
+
+    void updateStarCatalogSummary(StarCatalogSummary summary);
+    StarCatalogSummary getStarCatalogSummary() const;
 
     struct OverlayEventStats
     {
@@ -94,4 +109,7 @@ private:
 
     std::unique_ptr<helper::ws::HelperWebSocketHub> websocketHub_;
     int websocketPort_{0};
+
+    mutable std::mutex catalogMutex_;
+    StarCatalogSummary starCatalogSummary_{};
 };

@@ -3,6 +3,7 @@
 #include "event_channel.hpp"
 #include "helper/log_parsers.hpp"
 #include "helper/system_resolver.hpp"
+#include "shared/star_catalog.hpp"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -17,6 +18,11 @@
 #include <chrono>
 #include <iostream>
 #include <string>
+#include <vector>
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <cstring>
 
 #include <nlohmann/json.hpp>
 
@@ -238,6 +244,120 @@ int main()
         if (received.payload != event.payload)
         {
             throw std::runtime_error("Event payload mismatch");
+        }
+    }, failures);
+
+    run_case("star catalog loader", []() {
+        const std::vector<std::string> names{"Alpha", "Beta"};
+        std::vector<std::uint32_t> nameOffsets;
+        std::string stringBlob;
+        nameOffsets.reserve(names.size());
+        for (const auto& name : names)
+        {
+            nameOffsets.push_back(static_cast<std::uint32_t>(stringBlob.size()));
+            stringBlob.append(name);
+        }
+
+        std::vector<std::uint8_t> buffer;
+        buffer.reserve(44 + names.size() * 36 + stringBlob.size());
+
+        auto append_bytes = [&buffer](const void* data, std::size_t count) {
+            const auto* ptr = static_cast<const std::uint8_t*>(data);
+            buffer.insert(buffer.end(), ptr, ptr + count);
+        };
+
+        auto append_u16 = [&append_bytes](std::uint16_t value) {
+            append_bytes(&value, sizeof(value));
+        };
+
+        auto append_u32 = [&append_bytes](std::uint32_t value) {
+            append_bytes(&value, sizeof(value));
+        };
+
+        auto append_f32 = [&append_bytes](float value) {
+            append_bytes(&value, sizeof(value));
+        };
+
+        const char magic[8] = {'E','F','S','T','A','R','S','1'};
+        append_bytes(magic, sizeof(magic));
+        append_u16(1);  // version
+        append_u16(36); // record size
+        append_u32(static_cast<std::uint32_t>(names.size()));
+
+        // bbox min/max
+        append_f32(0.0f);
+        append_f32(0.0f);
+        append_f32(-1.0f);
+        append_f32(10.0f);
+        append_f32(20.0f);
+        append_f32(30.0f);
+
+        append_u32(static_cast<std::uint32_t>(stringBlob.size()));
+
+        const std::array<std::uint32_t, 2> systemIds{42u, 43u};
+        const std::array<std::uint32_t, 2> regionIds{7u, 8u};
+        const std::array<std::uint32_t, 2> constellationIds{3u, 4u};
+        const std::array<std::array<float, 3>, 2> positions{{{1.0f, 2.0f, 3.0f}, {4.0f, 5.0f, 6.0f}}};
+        const std::array<float, 2> securities{0.7f, 0.2f};
+
+        for (std::size_t i = 0; i < names.size(); ++i)
+        {
+            append_u32(systemIds[i]);
+            append_u32(regionIds[i]);
+            append_u32(constellationIds[i]);
+            append_u32(nameOffsets[i]);
+            append_u16(static_cast<std::uint16_t>(names[i].size()));
+            const std::uint8_t spectral = static_cast<std::uint8_t>(i + 1);
+            append_bytes(&spectral, sizeof(spectral));
+            const std::uint8_t flags = static_cast<std::uint8_t>(i);
+            append_bytes(&flags, sizeof(flags));
+            append_f32(positions[i][0]);
+            append_f32(positions[i][1]);
+            append_f32(positions[i][2]);
+            append_f32(securities[i]);
+        }
+
+        append_bytes(stringBlob.data(), stringBlob.size());
+
+        auto catalog = overlay::load_star_catalog(buffer);
+        if (catalog.version != 1)
+        {
+            throw std::runtime_error("Unexpected catalog version");
+        }
+        if (catalog.record_size != 36)
+        {
+            throw std::runtime_error("Unexpected record size");
+        }
+        if (catalog.records.size() != names.size())
+        {
+            throw std::runtime_error("Catalog record count mismatch");
+        }
+
+        const auto* alpha = catalog.find_by_system_id(42u);
+        if (!alpha)
+        {
+            throw std::runtime_error("Expected to find system 42");
+        }
+
+        auto alphaName = catalog.name_for(*alpha);
+        if (alphaName != "Alpha")
+        {
+            throw std::runtime_error("System 42 name mismatch");
+        }
+
+        if (std::abs(alpha->position.x - 1.0f) > 1e-6f || std::abs(alpha->position.y - 2.0f) > 1e-6f)
+        {
+            throw std::runtime_error("System 42 position mismatch");
+        }
+
+        if (catalog.find_by_system_id(999u) != nullptr)
+        {
+            throw std::runtime_error("Unexpected hit for unknown system");
+        }
+
+        if (catalog.name_for(catalog.records.back()) != "Beta")
+        {
+            throw std::runtime_error("System 43 name mismatch");
         }
     }, failures);
 

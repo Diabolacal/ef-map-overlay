@@ -16,6 +16,7 @@
 #include "log_watcher.hpp"
 #include "system_resolver.hpp"
 #include "overlay_schema.hpp"
+#include "star_catalog.hpp"
 
 class HelperRuntime
 {
@@ -40,8 +41,8 @@ public:
         bool lastInjectionSuccess{false};
         std::string lastErrorMessage;
         std::string lastInjectionMessage;
-    std::optional<std::chrono::system_clock::time_point> lastOverlayAcceptedAt;
-    std::optional<std::chrono::system_clock::time_point> lastOverlayGeneratedAt;
+        std::optional<std::chrono::system_clock::time_point> lastOverlayAcceptedAt;
+        std::optional<std::chrono::system_clock::time_point> lastOverlayGeneratedAt;
         std::filesystem::path chatLogDirectory;
         std::filesystem::path chatLogFile;
         std::filesystem::path combatLogDirectory;
@@ -50,6 +51,13 @@ public:
         std::optional<helper::logs::CombatSample> combat;
         bool logWatcherRunning{false};
         std::string logWatcherError;
+        bool starCatalogLoaded{false};
+        std::filesystem::path starCatalogPath;
+        std::uint16_t starCatalogVersion{0};
+        std::uint32_t starCatalogRecords{0};
+    overlay::Vec3f starCatalogBboxMin{};
+    overlay::Vec3f starCatalogBboxMax{};
+        std::string starCatalogError;
     };
 
     explicit HelperRuntime(Config config);
@@ -76,6 +84,7 @@ private:
     std::filesystem::path resolveArtifact(const std::filesystem::path& relative) const;
     void setError(std::string message) const;
     void setInjectionMessage(std::string message, bool success);
+    void loadStarCatalog();
 
     Config config_;
     HelperServer server_;
@@ -90,6 +99,9 @@ private:
     mutable std::string lastError_;
     mutable std::string lastInjectionMessage_;
     mutable bool lastInjectionSuccess_{false};
+    std::optional<overlay::StarCatalog> starCatalog_;
+    std::filesystem::path starCatalogPath_;
+    std::string starCatalogError_;
 
     std::filesystem::path executableDirectory_;
     std::filesystem::path artifactRoot_;

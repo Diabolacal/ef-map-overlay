@@ -43,11 +43,12 @@
 - **Custom protocol** `ef-overlay://attach?session=<token>` for explicit actions from the browser.
 - **Local HTTP API** `http://127.0.0.1:<port>/status`, `/attach`, `/dismiss` for health checks and richer commands.
 
-## 6. Progress Summary (2025-10-01)
+## 6. Progress Summary (2025-10-12)
 - ✅ **Helper + injector MVP** – C++ helper boots, exposes HTTP API, launches overlay smoke script, injects DX12 module with hotkey toggle.
 - ✅ **DX12 overlay hook** – Swap-chain hook renders ImGui window, handles input capture (F8 toggle, drag/move, edge resize) without impacting gameplay.
 - ✅ **Automation** – PowerShell smoke script coordinates helper launch, payload post, and DLL injection for quick manual validation.
 - ✅ **Overlay state v2 schema + event queue** – Shared-memory schema updated with player marker, highlights, camera pose, HUD hints, follow flag; overlay <-> helper event ring buffer published via shared memory + HTTP drain endpoint for testing.
+- ✅ **Camera-aligned starfield + route polyline** – DX12 renderer consumes helper camera pose, updates per-frame constants, and draws live route polylines from catalog lookups (GPU cost remains within budget).
 - ▢ **Installer & signing** – Deferred until we stabilize feature set; helper currently launched manually.
 - ▢ **Browser CTA** – Web → helper bridge still manual; custom protocol & detection flow to be designed.
 
@@ -75,11 +76,13 @@ Deliver a lightweight tray experience around the existing helper runtime so oper
    - ⏳ Wire helper-to-browser forwarding (HTTP/WebSocket) and auth story for event delivery into EF-Map web app.
 
 ### 7.2 Rendering pipeline
-3. **Star catalog asset** *(EF-Map-main tooling)*
+3. **Star catalog asset** *(EF-Map-main tooling + helper)* – ✅ exporter + helper loader (2025-10-02)
    - Export compact binary (positions, system_id, name hashes) from existing map data.
    - Helper packages asset and provides checksum/version handshake to overlay.
-4. **Native starfield renderer spike** *(overlay DLL)*
-   - Upload static buffers (stars as instanced point sprites) and draw polyline routes with lightweight shaders.
+   - ✅ `tools/export_star_catalog.py` + helper metadata endpoint surface catalog status for overlay consumption.
+4. **Native starfield renderer** *(overlay DLL)*
+   - ✅ Upload static buffers (stars as instanced point sprites) and draw polyline routes with lightweight shaders.
+   - ✅ Camera-aligned view + live route polyline (2025-10-12); next up: waypoint markers and performance telemetry.
    - Match EF-Map aesthetics (brightness falloff, selection glow) and ensure <1 ms GPU cost per frame.
 5. **HUD controls** *(overlay DLL & helper)*
    - Build ImGui panel with buttons/toggles for follow-mode, overlay opacity, route step actions.
@@ -133,6 +136,6 @@ Deliver a lightweight tray experience around the existing helper runtime so oper
 2. Prototype the helper log watcher + location toggle, exposing status through the tray.
 3. Bridge helper event queue to EF-Map web client once the tray/log watcher are stable.
 4. Stand up the combat telemetry overlay using the shared watcher pipeline.
-5. Implement star catalog export and native renderer spike (overlay repo).
+5. Polish the native renderer (waypoint markers, selection glow, performance instrumentation).
 6. Design browser CTA & helper discovery flow; mirror plan updates in `EF-Map-main`.
 7. Revisit packaging milestone once native rendering & event loop prove stable.
