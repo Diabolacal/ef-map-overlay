@@ -5,8 +5,10 @@
 #include <spdlog/spdlog.h>
 
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <filesystem>
+#include <iomanip>
 #include <sstream>
 
 namespace
@@ -64,6 +66,41 @@ namespace
         std::error_code ec;
         std::filesystem::create_directories(result, ec);
         return result;
+    }
+
+    std::wstring format_double(double value)
+    {
+        std::wostringstream oss;
+        const double magnitude = std::fabs(value);
+        int precision = 2;
+        if (magnitude >= 1000.0)
+        {
+            precision = 0;
+        }
+        else if (magnitude >= 100.0)
+        {
+            precision = 1;
+        }
+        oss << std::fixed << std::setprecision(precision) << value;
+        return oss.str();
+    }
+
+    std::wstring build_telemetry_url(const HelperRuntime& runtime, const wchar_t* path)
+    {
+        std::wstring host = utf8_to_wide(runtime.server().host());
+        if (host.empty())
+        {
+            host = L"127.0.0.1";
+        }
+
+        std::wostringstream oss;
+        oss << L"http://" << host << L":" << runtime.server().port() << path;
+        return oss.str();
+    }
+
+    bool open_url(const std::wstring& url)
+    {
+        return reinterpret_cast<INT_PTR>(::ShellExecuteW(nullptr, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL)) > 32;
     }
 }
 
@@ -218,6 +255,8 @@ void HelperTrayApplication::showContextMenu()
     ::InsertMenuW(menu, appendPos, MF_BYPOSITION | MF_ENABLED, static_cast<UINT>(MenuId::Inject), L"Inject overlay (exefile.exe)");
     ::InsertMenuW(menu, appendPos, MF_BYPOSITION | MF_ENABLED, static_cast<UINT>(MenuId::OpenLogs), L"Open logs folder");
     ::InsertMenuW(menu, appendPos, MF_BYPOSITION | MF_ENABLED, static_cast<UINT>(MenuId::CopyDiagnostics), L"Copy diagnostics to clipboard");
+    ::InsertMenuW(menu, appendPos, MF_BYPOSITION | (running ? MF_ENABLED : MF_GRAYED), static_cast<UINT>(MenuId::OpenTelemetryHistory), L"Open telemetry history");
+    ::InsertMenuW(menu, appendPos, MF_BYPOSITION | (running ? MF_ENABLED : MF_GRAYED), static_cast<UINT>(MenuId::ResetTelemetry), L"Reset telemetry session");
     ::InsertMenuW(menu, appendPos, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
     ::InsertMenuW(menu, appendPos, MF_BYPOSITION | MF_ENABLED, static_cast<UINT>(MenuId::Exit), L"Exit");
 
@@ -335,6 +374,45 @@ void HelperTrayApplication::handleCommand(MenuId id)
             }
             break;
         }
+        case MenuId::OpenTelemetryHistory:
+        {
+            const auto url = build_telemetry_url(runtime_, L"/telemetry/history");
+            if (open_url(url))
+            {
+                postBalloon(L"Telemetry history", L"Opened telemetry history in browser", NIIF_INFO);
+            }
+            else
+            {
+                std::wstring message = L"Unable to open " + truncate_tooltip(url, 60);
+                postBalloon(L"Telemetry history", message, NIIF_ERROR);
+            }
+            break;
+        }
+        case MenuId::ResetTelemetry:
+        {
+            auto summary = runtime_.resetTelemetrySession();
+            if (summary.has_value())
+            {
+                std::wstring message = L"Telemetry history reset";
+                if (summary->history.has_value())
+                {
+                    message += L" (" + std::to_wstring(summary->history->slices.size()) + L" slices)";
+                }
+            postBalloon(L"Telemetry reset", message, NIIF_INFO);
+            }
+            else
+            {
+                const auto status = runtime_.getStatus();
+                auto message = utf8_to_wide(status.lastErrorMessage);
+                if (message.empty())
+                {
+                    message = L"Telemetry reset failed";
+                }
+                postBalloon(L"Telemetry reset", message, NIIF_ERROR);
+            }
+            updateTooltip();
+            break;
+        }
         case MenuId::Exit:
         {
             ::DestroyWindow(hwnd_);
@@ -439,6 +517,12 @@ std::wstring HelperTrayApplication::buildTooltip() const
         tip << L"\n" << combatLine;
     }
 
+    const auto telemetryLine = formatTelemetryLine(status);
+    if (!telemetryLine.empty())
+    {
+        tip << L"\n" << telemetryLine;
+    }
+
     if (!status.lastErrorMessage.empty())
     {
         tip << L"\nErr: " << truncate_tooltip(utf8_to_wide(status.lastErrorMessage), 40);
@@ -517,6 +601,43 @@ std::wstring HelperTrayApplication::buildDiagnosticsText() const
         {
             out << L"\r\nLast combat line: " << utf8_to_wide(status.combat->lastCombatLine);
         }
+    }
+
+    const auto telemetryLine = formatTelemetryLine(status);
+    if (!telemetryLine.empty())
+    {
+        out << L"\r\n" << telemetryLine;
+    }
+
+    if (status.telemetry.mining.has_value() && status.telemetry.mining->hasData() && !status.telemetry.mining->buckets.empty())
+    {
+        out << L"\r\nTelemetry buckets:";
+        std::size_t count = 0;
+        for (const auto& bucket : status.telemetry.mining->buckets)
+        {
+            if (count++ >= 3)
+            {
+                out << L" ...";
+                break;
+            }
+            out << L" " << utf8_to_wide(bucket.resource) << L"=" << format_double(bucket.sessionTotalM3);
+        }
+    }
+
+    if (status.telemetry.history.has_value())
+    {
+        out << L"\r\nTelemetry history: slices=" << status.telemetry.history->slices.size()
+            << L"/" << status.telemetry.history->capacity
+            << L" (" << format_double(status.telemetry.history->sliceSeconds) << L"s)";
+        if (!status.telemetry.history->resetMarkersMs.empty())
+        {
+            out << L" | resets=" << status.telemetry.history->resetMarkersMs.size();
+        }
+    }
+
+    if (status.lastTelemetryResetAt)
+    {
+        out << L"\r\nTelemetry last reset: " << formatRelativeTime(status.lastTelemetryResetAt);
     }
 
     if (!status.lastErrorMessage.empty())
@@ -653,6 +774,83 @@ std::wstring HelperTrayApplication::formatOverlayLine(const HelperRuntime::Statu
     {
            oss << L' ' << kBulletChar << L" ing " << formatRelativeTime(status.lastOverlayAcceptedAt);
     }
+    return oss.str();
+}
+
+std::wstring HelperTrayApplication::formatTelemetryLine(const HelperRuntime::Status& status) const
+{
+    const auto& telemetry = status.telemetry;
+    const bool hasCombat = telemetry.combat.has_value() && telemetry.combat->hasData();
+    const bool hasMining = telemetry.mining.has_value() && telemetry.mining->hasData();
+    const bool hasHistory = telemetry.history.has_value() && (telemetry.history->hasData() || telemetry.history->saturated);
+    const bool hasReset = status.lastTelemetryResetAt.has_value();
+
+    if (!hasCombat && !hasMining && !hasHistory && !hasReset)
+    {
+        return {};
+    }
+
+    std::wostringstream oss;
+    oss << L"Telemetry:";
+
+    bool firstSegment = true;
+    auto appendSegment = [&](const std::wstring& segment) {
+        if (segment.empty())
+        {
+            return;
+        }
+        if (!firstSegment)
+        {
+            oss << L"; ";
+        }
+        else
+        {
+            oss << L' ';
+            firstSegment = false;
+        }
+        oss << segment;
+    };
+
+    if (hasCombat)
+    {
+        std::wstring segment = L"combat " + format_double(telemetry.combat->totalDamageDealt)
+            + L" / " + format_double(telemetry.combat->totalDamageTaken);
+        appendSegment(segment);
+    }
+
+    if (hasMining)
+    {
+        std::wstring segment = L"mining " + format_double(telemetry.mining->totalVolumeM3) + L" m3";
+        if (!telemetry.mining->buckets.empty())
+        {
+            const auto& bucket = telemetry.mining->buckets.front();
+            segment += L" (" + utf8_to_wide(bucket.resource);
+            if (telemetry.mining->buckets.size() > 1)
+            {
+                segment += L"+" + std::to_wstring(telemetry.mining->buckets.size() - 1);
+            }
+            segment += L")";
+        }
+        appendSegment(segment);
+    }
+
+    if (hasHistory)
+    {
+        std::wstring segment = L"history " + std::to_wstring(telemetry.history->slices.size());
+        if (telemetry.history->capacity > 0)
+        {
+            segment += L"/" + std::to_wstring(telemetry.history->capacity);
+        }
+        segment += L" slices";
+        appendSegment(segment);
+    }
+
+    if (hasReset)
+    {
+        std::wstring segment = L"reset " + formatRelativeTime(status.lastTelemetryResetAt);
+        appendSegment(segment);
+    }
+
     return oss.str();
 }
 

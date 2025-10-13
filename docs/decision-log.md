@@ -1,3 +1,12 @@
+## 2025-10-13 – Overlay HUD telemetry readout
+- Goal: Surface helper-computed combat DPS and mining yield metrics directly in the overlay window so we can observe log-driven telemetry in real time.
+- Files: `src/overlay/overlay_renderer.cpp`.
+- Diff: ~+70/−0 (new Telemetry section with combat/mining summaries, recent windows, and last-event timers).
+- Risk: medium (UI changes in injected ImGui HUD).
+- Gates: build ✅ (`cmake --build build --config Debug`) | tests ❌ (`build/tests/Debug/ef_overlay_tests.exe` – existing combat damage parsing expectation) | smoke ⚪ (awaiting in-game inject with live logs).
+- Cross-repo: None.
+- Follow-ups: Fix the combat damage parser regression flagged by the unit test, then capture screenshots of the telemetry HUD once in-game smoke is possible.
+
 ## 2025-10-13 – Overlay styling hotfix (foreground accent rollback)
 - Goal: Revert the foreground draw-list accent experiment that froze the client on injection while keeping the white resize highlight and top accent.
 - Files: `src/overlay/overlay_renderer.cpp`.
@@ -71,6 +80,15 @@
 - Cross-repo: Informational only; no `EF-Map-main` changes required.
 - Follow-ups: Replace debug ImGui panel with actual map visuals, script helper shutdown for automated runs, and schedule the next smoke once log watcher routes feed the overlay.
 
+## 2025-10-13 – Overlay roadmap alignment: local telemetry focus
+- Goal: Synchronize the roadmap with the clarified local-only telemetry plan—acknowledging the existing chat log parser, staging follow mode, mining/combat graphs, and packaging as sequenced phases.
+- Files: `docs/initiatives/GAME_OVERLAY_PLAN.md` (mirrored in EF-Map main).
+- Diff: documentation updates (revised progress summary, new phased roadmap, refreshed next steps list).
+- Risk: low (planning alignment).
+- Gates: build ⚪ | tests ⚪ | smoke ⚪ (no runtime changes).
+- Cross-repo: Logged in `EF-Map-main/docs/decision-log.md` with matching title/date.
+- Follow-ups: Close out Phase 1 polish, then begin Phase 2 mining telemetry implementation using live logs.
+
 ## 2025-10-12 – Helper heartbeat + overlay auto-hide
 - Goal: Hide the in-game overlay automatically when the helper stops (graceful exit or crash) and revive it when the heartbeat resumes.
 - Files: `src/shared/overlay_schema.{hpp,cpp}`, `src/helper/helper_server.{hpp,cpp}`, `src/helper/helper_runtime.cpp`, `src/helper/log_watcher.cpp`, `src/overlay/overlay_renderer.{hpp,cpp}`, `tests/overlay_tests.cpp`, `README.md`.
@@ -97,6 +115,15 @@
 - Gates: build ⚪ | tests ⚪ | smoke ⚪ (no code path changes).
 - Cross-repo: Mirrored in `EF-Map-main/docs/decision-log.md` with same title/date.
 - Follow-ups: Execute helper-first roadmap—ship log watcher + position sync, tray UX shell, session tracking modules, and browser CTA/event bridge before revisiting starfield polish.
+
+## 2025-10-13 – DPS/mining telemetry roadmap breakdown
+- Goal: Document the phased DPS/mining telemetry rollout (log parsing, real-time aggregators, schema/UI wiring, optional web bridge) while constraining scope to personal character data.
+- Files: docs only (`docs/initiatives/GAME_OVERLAY_PLAN.md`).
+- Diff: n/a (documentation elaboration).
+- Risk: low (planning-only change).
+- Gates: build ⚪ | tests ⚪ | smoke ⚪ (no runtime changes).
+- Cross-repo: Mirrored in `EF-Map-main/docs/decision-log.md` with matching summary.
+- Follow-ups: Implement helper parser extensions, aggregator publishing, overlay HUD telemetry, and diagnostics per the documented phases.
 
 ## 2025-10-02 – Native starfield renderer spike (DX12 point cloud)
 - Goal: Render the EF-Map star catalog inside the overlay using a lightweight DX12 pipeline (point sprites + additive blend) as the baseline for native visuals.

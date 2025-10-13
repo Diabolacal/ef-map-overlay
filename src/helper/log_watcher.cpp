@@ -13,7 +13,10 @@
 #include <ctime>
 #include <cwchar>
 #include <cwctype>
+#include <deque>
+#include <map>
 #include <iomanip>
+#include <cctype>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -22,6 +25,15 @@ namespace helper::logs
 {
     namespace
     {
+        std::uint64_t to_ms(const std::chrono::system_clock::time_point& tp)
+        {
+            if (tp.time_since_epoch().count() == 0)
+            {
+                return 0;
+            }
+            return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(tp.time_since_epoch()).count());
+        }
+
         bool starts_with_case_insensitive(const std::wstring& value, const std::wstring& prefix)
         {
             if (value.size() < prefix.size())
@@ -60,15 +72,414 @@ namespace helper::logs
             value.erase(std::remove(value.begin(), value.end(), '\n'), value.end());
             return value;
         }
+
+        std::string make_bucket_id(const std::string& label)
+        {
+            std::string id;
+            id.reserve(label.size());
+            for (char ch : label)
+            {
+                if (std::isalnum(static_cast<unsigned char>(ch)))
+                {
+                    id.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+                }
+                else if (!id.empty() && id.back() != '-')
+                {
+                    id.push_back('-');
+                }
+            }
+
+            while (!id.empty() && id.back() == '-')
+            {
+                id.pop_back();
+            }
+
+            if (id.empty())
+            {
+                id = "resource";
+            }
+
+            return id;
+        }
     }
 
-    LogWatcher::LogWatcher(Config config, const SystemResolver& resolver, PublishCallback publishCallback, StatusCallback statusCallback)
+    LogWatcher::LogWatcher(Config config, const SystemResolver& resolver, PublishCallback publishCallback, StatusCallback statusCallback, FollowModeSupplier followSupplier)
         : config_(std::move(config))
         , resolver_(resolver)
         , publishCallback_(std::move(publishCallback))
         , statusCallback_(std::move(statusCallback))
+        , combatTelemetryAggregator_(std::make_unique<CombatTelemetryAggregator>())
+    , miningTelemetryAggregator_(std::make_unique<MiningTelemetryAggregator>())
+    , telemetryHistoryAggregator_(std::make_unique<TelemetryHistoryAggregator>())
+    , followModeSupplier_(std::move(followSupplier))
     {
     }
+
+    class LogWatcher::CombatTelemetryAggregator
+    {
+    public:
+        void add(const CombatDamageEvent& event)
+        {
+            prune(event.timestamp);
+            recent_.push_back(event);
+            if (event.playerDealt)
+            {
+                totalDamageDealt_ += event.amount;
+            }
+            else
+            {
+                totalDamageTaken_ += event.amount;
+            }
+            lastEvent_ = event.timestamp;
+        }
+
+        std::optional<CombatTelemetrySnapshot> snapshot(const std::chrono::system_clock::time_point& now)
+        {
+            prune(now);
+
+            if (recent_.empty() && totalDamageDealt_ == 0.0 && totalDamageTaken_ == 0.0)
+            {
+                return std::nullopt;
+            }
+
+            CombatTelemetrySnapshot snapshot;
+            snapshot.totalDamageDealt = totalDamageDealt_;
+            snapshot.totalDamageTaken = totalDamageTaken_;
+            snapshot.recentWindowSeconds = static_cast<double>(window_.count());
+            if (lastEvent_.time_since_epoch().count() != 0)
+            {
+                snapshot.lastEventMs = to_ms(lastEvent_);
+            }
+
+            double recentDealt = 0.0;
+            double recentTaken = 0.0;
+            for (const auto& ev : recent_)
+            {
+                if (ev.playerDealt)
+                {
+                    recentDealt += ev.amount;
+                }
+                else
+                {
+                    recentTaken += ev.amount;
+                }
+            }
+            snapshot.recentDamageDealt = recentDealt;
+            snapshot.recentDamageTaken = recentTaken;
+
+            if (!snapshot.hasData() && snapshot.recentDamageDealt <= 0.0 && snapshot.recentDamageTaken <= 0.0)
+            {
+                return std::nullopt;
+            }
+
+            return snapshot;
+        }
+
+        void reset()
+        {
+            recent_.clear();
+            totalDamageDealt_ = 0.0;
+            totalDamageTaken_ = 0.0;
+            lastEvent_ = std::chrono::system_clock::time_point{};
+        }
+
+    private:
+        void prune(const std::chrono::system_clock::time_point& now)
+        {
+            const auto cutoff = now - window_;
+            while (!recent_.empty() && recent_.front().timestamp < cutoff)
+            {
+                recent_.pop_front();
+            }
+        }
+
+        std::deque<CombatDamageEvent> recent_;
+        double totalDamageDealt_{0.0};
+        double totalDamageTaken_{0.0};
+        std::chrono::seconds window_{30};
+        std::chrono::system_clock::time_point lastEvent_{};
+    };
+
+    class LogWatcher::MiningTelemetryAggregator
+    {
+    public:
+        void add(const MiningYieldEvent& event)
+        {
+            prune(event.timestamp);
+            recent_.push_back(event);
+            totalVolume_ += event.volumeM3;
+            lastEvent_ = event.timestamp;
+            sessionBuckets_[event.resource] += event.volumeM3;
+        }
+
+        std::optional<MiningTelemetrySnapshot> snapshot(const std::chrono::system_clock::time_point& now)
+        {
+            prune(now);
+
+            if (recent_.empty() && totalVolume_ == 0.0)
+            {
+                return std::nullopt;
+            }
+
+            MiningTelemetrySnapshot snapshot;
+            snapshot.totalVolumeM3 = totalVolume_;
+            snapshot.recentWindowSeconds = static_cast<double>(window_.count());
+            if (lastEvent_.time_since_epoch().count() != 0)
+            {
+                snapshot.lastEventMs = to_ms(lastEvent_);
+            }
+
+            double recentVolume = 0.0;
+            std::map<std::string, double> recentBuckets;
+            for (const auto& ev : recent_)
+            {
+                recentVolume += ev.volumeM3;
+                recentBuckets[ev.resource] += ev.volumeM3;
+            }
+            snapshot.recentVolumeM3 = recentVolume;
+
+            if (!sessionBuckets_.empty() || !recentBuckets.empty())
+            {
+                std::map<std::string, double> merged = sessionBuckets_;
+                for (const auto& kv : recentBuckets)
+                {
+                    if (merged.find(kv.first) == merged.end())
+                    {
+                        merged.emplace(kv.first, 0.0);
+                    }
+                }
+
+                snapshot.buckets.reserve(merged.size());
+                for (const auto& kv : merged)
+                {
+                    MiningBucketSnapshot bucket;
+                    bucket.resource = kv.first;
+                    bucket.sessionTotalM3 = kv.second;
+                    if (auto it = recentBuckets.find(kv.first); it != recentBuckets.end())
+                    {
+                        bucket.recentVolumeM3 = it->second;
+                    }
+                    snapshot.buckets.push_back(std::move(bucket));
+                }
+            }
+
+            if (!snapshot.hasData() && snapshot.recentVolumeM3 <= 0.0)
+            {
+                return std::nullopt;
+            }
+
+            return snapshot;
+        }
+
+        void reset()
+        {
+            recent_.clear();
+            totalVolume_ = 0.0;
+            lastEvent_ = std::chrono::system_clock::time_point{};
+            sessionBuckets_.clear();
+        }
+
+    private:
+        void prune(const std::chrono::system_clock::time_point& now)
+        {
+            const auto cutoff = now - window_;
+            while (!recent_.empty() && recent_.front().timestamp < cutoff)
+            {
+                recent_.pop_front();
+            }
+        }
+
+        std::deque<MiningYieldEvent> recent_;
+        double totalVolume_{0.0};
+        std::chrono::seconds window_{120};
+        std::chrono::system_clock::time_point lastEvent_{};
+        std::map<std::string, double> sessionBuckets_;
+    };
+
+    class LogWatcher::TelemetryHistoryAggregator
+    {
+    public:
+        TelemetryHistoryAggregator()
+        {
+            const auto historySeconds = historyDuration_.count();
+            const auto sliceSeconds = sliceDuration_.count();
+            if (sliceSeconds > 0)
+            {
+                capacity_ = static_cast<std::size_t>(historySeconds / sliceSeconds);
+                if (capacity_ == 0)
+                {
+                    capacity_ = 1;
+                }
+            }
+        }
+
+        void addCombat(const CombatDamageEvent& event)
+        {
+            if (event.timestamp.time_since_epoch().count() == 0)
+            {
+                return;
+            }
+
+            double dealt = event.playerDealt ? event.amount : 0.0;
+            double taken = event.playerDealt ? 0.0 : event.amount;
+            record(event.timestamp, dealt, taken, 0.0);
+        }
+
+        void addMining(const MiningYieldEvent& event)
+        {
+            if (event.timestamp.time_since_epoch().count() == 0)
+            {
+                return;
+            }
+
+            record(event.timestamp, 0.0, 0.0, event.volumeM3);
+        }
+
+        void resetSession(const std::chrono::system_clock::time_point& now)
+        {
+            const auto marker = to_ms(now);
+            if (marker == 0)
+            {
+                return;
+            }
+            resetMarkers_.push_back(marker);
+            pruneMarkers(cutoffMs(marker));
+        }
+
+        void resetAll()
+        {
+            slices_.clear();
+            resetMarkers_.clear();
+            saturated_ = false;
+        }
+
+        TelemetryHistorySnapshot snapshot(const std::chrono::system_clock::time_point& now)
+        {
+            prune(now);
+
+            TelemetryHistorySnapshot snapshot;
+            snapshot.sliceSeconds = static_cast<double>(sliceDuration_.count());
+            snapshot.capacity = static_cast<std::uint32_t>(capacity_);
+            snapshot.saturated = saturated_;
+            snapshot.resetMarkersMs = resetMarkers_;
+
+            const auto cutoff = cutoffMs(to_ms(now));
+            snapshot.slices.reserve(slices_.size());
+            for (const auto& entry : slices_)
+            {
+                if (entry.first < cutoff)
+                {
+                    continue;
+                }
+                TelemetryHistorySliceSnapshot slice;
+                slice.startMs = entry.first;
+                slice.durationSeconds = static_cast<double>(sliceDuration_.count());
+                slice.damageDealt = entry.second.damageDealt;
+                slice.damageTaken = entry.second.damageTaken;
+                slice.miningVolumeM3 = entry.second.miningVolume;
+                snapshot.slices.push_back(std::move(slice));
+            }
+
+            return snapshot;
+        }
+
+    private:
+        struct Slice
+        {
+            double damageDealt{0.0};
+            double damageTaken{0.0};
+            double miningVolume{0.0};
+        };
+
+        void record(const std::chrono::system_clock::time_point& timestamp, double dealt, double taken, double mining)
+        {
+            const auto ms = to_ms(timestamp);
+            if (ms == 0)
+            {
+                return;
+            }
+
+            const auto start = alignToSlice(ms);
+            auto& slice = slices_[start];
+            slice.damageDealt += dealt;
+            slice.damageTaken += taken;
+            slice.miningVolume += mining;
+
+            prune(std::chrono::system_clock::time_point{std::chrono::milliseconds{ms}});
+        }
+
+        void prune(const std::chrono::system_clock::time_point& now)
+        {
+            const auto cutoff = cutoffMs(to_ms(now));
+            if (cutoff > 0)
+            {
+                while (!slices_.empty())
+                {
+                    auto it = slices_.begin();
+                    if (it->first >= cutoff)
+                    {
+                        break;
+                    }
+                    slices_.erase(it);
+                }
+
+                pruneMarkers(cutoff);
+            }
+
+            if (capacity_ > 0 && slices_.size() > capacity_)
+            {
+                saturated_ = true;
+                while (slices_.size() > capacity_)
+                {
+                    slices_.erase(slices_.begin());
+                }
+            }
+        }
+
+        std::uint64_t alignToSlice(std::uint64_t ms) const
+        {
+            const auto sliceMs = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(sliceDuration_).count());
+            if (sliceMs == 0)
+            {
+                return ms;
+            }
+            return (ms / sliceMs) * sliceMs;
+        }
+
+        std::uint64_t cutoffMs(std::uint64_t reference) const
+        {
+            const auto historyMs = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(historyDuration_).count());
+            if (historyMs == 0 || reference < historyMs)
+            {
+                return 0;
+            }
+            return reference - historyMs;
+        }
+
+        void pruneMarkers(std::uint64_t cutoff)
+        {
+            if (cutoff == 0)
+            {
+                return;
+            }
+            auto it = resetMarkers_.begin();
+            while (it != resetMarkers_.end())
+            {
+                if (*it >= cutoff)
+                {
+                    break;
+                }
+                it = resetMarkers_.erase(it);
+            }
+        }
+
+        std::map<std::uint64_t, Slice> slices_;
+        std::vector<std::uint64_t> resetMarkers_;
+        std::chrono::seconds sliceDuration_{std::chrono::minutes(5)};
+        std::chrono::seconds historyDuration_{std::chrono::hours(24)};
+        std::size_t capacity_{0};
+        bool saturated_{false};
+    };
 
     LogWatcher::~LogWatcher()
     {
@@ -268,6 +679,10 @@ namespace helper::logs
             combatTail_.reset(*latest);
             status_.combatFile = *latest;
             status_.combat.emplace();
+            combatTelemetryAggregator_->reset();
+            miningTelemetryAggregator_->reset();
+            telemetryHistoryAggregator_->resetAll();
+            status_.telemetry = TelemetrySummary{};
             if (auto id = combat_log_character_id(latest->filename().string()))
             {
                 status_.combat->characterId = *id;
@@ -351,8 +766,23 @@ namespace helper::logs
         }
 
         bool updated = false;
+        bool telemetryUpdated = false;
         for (const auto& line : lines)
         {
+            if (const auto combatEvent = parse_combat_damage_line(line))
+            {
+                combatTelemetryAggregator_->add(*combatEvent);
+                telemetryHistoryAggregator_->addCombat(*combatEvent);
+                telemetryUpdated = true;
+            }
+
+            if (const auto miningEvent = parse_mining_yield_line(line))
+            {
+                miningTelemetryAggregator_->add(*miningEvent);
+                telemetryHistoryAggregator_->addMining(*miningEvent);
+                telemetryUpdated = true;
+            }
+
             if (line.find("(combat)") != std::string::npos)
             {
                 ++status_.combat->combatEventCount;
@@ -368,7 +798,23 @@ namespace helper::logs
             }
         }
 
-        return updated;
+        if (telemetryUpdated)
+        {
+            const auto now = std::chrono::system_clock::now();
+            status_.telemetry.combat = combatTelemetryAggregator_->snapshot(now);
+            status_.telemetry.mining = miningTelemetryAggregator_->snapshot(now);
+            auto historySnapshot = telemetryHistoryAggregator_->snapshot(now);
+            if (historySnapshot.hasData() || !historySnapshot.resetMarkersMs.empty())
+            {
+                status_.telemetry.history = std::move(historySnapshot);
+            }
+            else
+            {
+                status_.telemetry.history.reset();
+            }
+        }
+
+        return updated || telemetryUpdated;
     }
 
     std::vector<std::string> LogWatcher::readNewLines(FileTailState& state)
@@ -737,13 +1183,13 @@ namespace helper::logs
         lastPublishedAt_ = now;
     }
 
-    overlay::OverlayState LogWatcher::buildOverlayState(const LogWatcherStatus& snapshot)
+    overlay::OverlayState LogWatcher::buildOverlayState(const LogWatcherStatus& snapshot) const
     {
         overlay::OverlayState state;
         state.generated_at_ms = now_ms();
-    state.heartbeat_ms = state.generated_at_ms;
-        state.follow_mode_enabled = true;
-    state.source_online = true;
+        state.heartbeat_ms = state.generated_at_ms;
+        state.follow_mode_enabled = followModeEnabled();
+        state.source_online = true;
 
         if (snapshot.location.has_value())
         {
@@ -776,7 +1222,140 @@ namespace helper::logs
             state.notes = buildStatusNotes(snapshot);
         }
 
+        if (snapshot.telemetry.combat.has_value() || snapshot.telemetry.mining.has_value())
+        {
+            overlay::TelemetryMetrics metrics;
+            if (snapshot.telemetry.combat.has_value())
+            {
+                const auto& combat = *snapshot.telemetry.combat;
+                if (combat.hasData())
+                {
+                    overlay::CombatTelemetry payload;
+                    payload.total_damage_dealt = combat.totalDamageDealt;
+                    payload.total_damage_taken = combat.totalDamageTaken;
+                    payload.recent_damage_dealt = combat.recentDamageDealt;
+                    payload.recent_damage_taken = combat.recentDamageTaken;
+                    payload.recent_window_seconds = combat.recentWindowSeconds;
+                    payload.last_event_ms = combat.lastEventMs;
+                    metrics.combat = payload;
+                }
+            }
+
+            if (snapshot.telemetry.mining.has_value())
+            {
+                const auto& mining = *snapshot.telemetry.mining;
+                if (mining.hasData())
+                {
+                    overlay::MiningTelemetry payload;
+                    payload.total_volume_m3 = mining.totalVolumeM3;
+                    payload.recent_volume_m3 = mining.recentVolumeM3;
+                    payload.recent_window_seconds = mining.recentWindowSeconds;
+                    payload.last_event_ms = mining.lastEventMs;
+                    if (!mining.buckets.empty())
+                    {
+                        payload.buckets.reserve(mining.buckets.size());
+                        for (const auto& bucket : mining.buckets)
+                        {
+                            overlay::TelemetryBucket schemaBucket;
+                            schemaBucket.id = make_bucket_id(bucket.resource);
+                            schemaBucket.label = bucket.resource;
+                            schemaBucket.session_total = bucket.sessionTotalM3;
+                            schemaBucket.recent_total = bucket.recentVolumeM3;
+                            payload.buckets.push_back(std::move(schemaBucket));
+                        }
+                    }
+                    metrics.mining = payload;
+                }
+            }
+
+            if (snapshot.telemetry.history.has_value())
+            {
+                const auto& history = *snapshot.telemetry.history;
+                overlay::TelemetryHistory historyPayload;
+                historyPayload.slice_seconds = history.sliceSeconds;
+                historyPayload.capacity = history.capacity;
+                historyPayload.saturated = history.saturated;
+                historyPayload.reset_markers_ms = history.resetMarkersMs;
+                historyPayload.slices.reserve(history.slices.size());
+                for (const auto& slice : history.slices)
+                {
+                    overlay::TelemetryHistorySlice payloadSlice;
+                    payloadSlice.start_ms = slice.startMs;
+                    payloadSlice.duration_seconds = slice.durationSeconds;
+                    payloadSlice.damage_dealt = slice.damageDealt;
+                    payloadSlice.damage_taken = slice.damageTaken;
+                    payloadSlice.mining_volume_m3 = slice.miningVolumeM3;
+                    historyPayload.slices.push_back(std::move(payloadSlice));
+                }
+                metrics.history = std::move(historyPayload);
+            }
+
+            if (metrics.combat.has_value() || metrics.mining.has_value() || metrics.history.has_value())
+            {
+                state.telemetry = std::move(metrics);
+            }
+        }
+
         return state;
+    }
+
+    void LogWatcher::setFollowModeSupplier(FollowModeSupplier supplier)
+    {
+        followModeSupplier_ = std::move(supplier);
+    }
+
+    bool LogWatcher::followModeEnabled() const
+    {
+        if (followModeSupplier_)
+        {
+            try
+            {
+                return followModeSupplier_();
+            }
+            catch (...)
+            {
+                return true;
+            }
+        }
+        return true;
+    }
+
+    TelemetrySummary LogWatcher::telemetrySnapshot()
+    {
+        std::lock_guard<std::mutex> guard(mutex_);
+        const auto now = std::chrono::system_clock::now();
+        TelemetrySummary summary;
+        summary.combat = combatTelemetryAggregator_->snapshot(now);
+        summary.mining = miningTelemetryAggregator_->snapshot(now);
+        auto historySnapshot = telemetryHistoryAggregator_->snapshot(now);
+        if (historySnapshot.hasData() || !historySnapshot.resetMarkersMs.empty())
+        {
+            summary.history = std::move(historySnapshot);
+        }
+
+        status_.telemetry = summary;
+        return summary;
+    }
+
+    TelemetrySummary LogWatcher::resetTelemetrySession()
+    {
+        std::lock_guard<std::mutex> guard(mutex_);
+        const auto now = std::chrono::system_clock::now();
+        combatTelemetryAggregator_->reset();
+        miningTelemetryAggregator_->reset();
+        telemetryHistoryAggregator_->resetSession(now);
+
+        TelemetrySummary summary;
+        summary.combat = combatTelemetryAggregator_->snapshot(now);
+        summary.mining = miningTelemetryAggregator_->snapshot(now);
+        auto historySnapshot = telemetryHistoryAggregator_->snapshot(now);
+        if (historySnapshot.hasData() || !historySnapshot.resetMarkersMs.empty())
+        {
+            summary.history = std::move(historySnapshot);
+        }
+
+        status_.telemetry = summary;
+        return summary;
     }
 
     std::string LogWatcher::buildStatusNotes(const LogWatcherStatus& snapshot)
@@ -818,6 +1397,25 @@ namespace helper::logs
         else if (!snapshot.combatFile.empty())
         {
             oss << "; Combat log armed";
+        }
+
+        if (snapshot.telemetry.combat.has_value() && snapshot.telemetry.combat->hasData())
+        {
+            const auto flags = oss.flags();
+            const auto precision = oss.precision();
+            oss << "; Damage dealt " << std::fixed << std::setprecision(1) << snapshot.telemetry.combat->totalDamageDealt
+                << " / taken " << snapshot.telemetry.combat->totalDamageTaken;
+            oss.flags(flags);
+            oss.precision(precision);
+        }
+
+        if (snapshot.telemetry.mining.has_value() && snapshot.telemetry.mining->hasData())
+        {
+            const auto flags = oss.flags();
+            const auto precision = oss.precision();
+            oss << "; Mined " << std::fixed << std::setprecision(1) << snapshot.telemetry.mining->totalVolumeM3 << " m3";
+            oss.flags(flags);
+            oss.precision(precision);
         }
 
         return oss.str();

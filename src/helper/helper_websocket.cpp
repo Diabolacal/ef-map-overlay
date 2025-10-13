@@ -698,7 +698,7 @@ namespace helper::ws
         nlohmann::json hello{
             {"type", "hello"},
             {"version", 1},
-            {"features", nlohmann::json::array({"overlay_state", "overlay_events"})},
+            {"features", nlohmann::json::array({"overlay_state", "overlay_events", "follow_mode"})},
             {"http_port", config_.httpPort},
             {"ws_port", config_.port}
         };

@@ -27,6 +27,8 @@ private:
         Inject,
         OpenLogs,
         CopyDiagnostics,
+        OpenTelemetryHistory,
+        ResetTelemetry,
         Exit
     };
 
@@ -51,6 +53,7 @@ private:
     std::wstring formatLogWatcherLine(const HelperRuntime::Status& status) const;
     std::wstring formatCombatLine(const HelperRuntime::Status& status) const;
     std::wstring formatOverlayLine(const HelperRuntime::Status& status) const;
+    std::wstring formatTelemetryLine(const HelperRuntime::Status& status) const;
     std::wstring formatRelativeTime(const std::optional<std::chrono::system_clock::time_point>& stamp) const;
     static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     static HelperTrayApplication* fromWindow(HWND hwnd);

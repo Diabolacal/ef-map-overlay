@@ -217,6 +217,163 @@ namespace overlay
 
         state.source_online = read_bool(json, "source_online", true);
 
+        if (json.contains("telemetry") && json.at("telemetry").is_object())
+        {
+            const auto& telemetryJson = json.at("telemetry");
+            TelemetryMetrics metrics;
+            if (telemetryJson.contains("combat") && telemetryJson.at("combat").is_object())
+            {
+                const auto& combatJson = telemetryJson.at("combat");
+                CombatTelemetry combat;
+                if (combatJson.contains("total_damage_dealt"))
+                {
+                    combat.total_damage_dealt = combatJson.at("total_damage_dealt").get<double>();
+                }
+                if (combatJson.contains("total_damage_taken"))
+                {
+                    combat.total_damage_taken = combatJson.at("total_damage_taken").get<double>();
+                }
+                if (combatJson.contains("recent_damage_dealt"))
+                {
+                    combat.recent_damage_dealt = combatJson.at("recent_damage_dealt").get<double>();
+                }
+                if (combatJson.contains("recent_damage_taken"))
+                {
+                    combat.recent_damage_taken = combatJson.at("recent_damage_taken").get<double>();
+                }
+                if (combatJson.contains("recent_window_seconds"))
+                {
+                    combat.recent_window_seconds = combatJson.at("recent_window_seconds").get<double>();
+                }
+                if (combatJson.contains("last_event_ms"))
+                {
+                    combat.last_event_ms = combatJson.at("last_event_ms").get<std::uint64_t>();
+                }
+                metrics.combat = combat;
+            }
+
+            if (telemetryJson.contains("mining") && telemetryJson.at("mining").is_object())
+            {
+                const auto& miningJson = telemetryJson.at("mining");
+                MiningTelemetry mining;
+                if (miningJson.contains("total_volume_m3"))
+                {
+                    mining.total_volume_m3 = miningJson.at("total_volume_m3").get<double>();
+                }
+                if (miningJson.contains("recent_volume_m3"))
+                {
+                    mining.recent_volume_m3 = miningJson.at("recent_volume_m3").get<double>();
+                }
+                if (miningJson.contains("recent_window_seconds"))
+                {
+                    mining.recent_window_seconds = miningJson.at("recent_window_seconds").get<double>();
+                }
+                if (miningJson.contains("last_event_ms"))
+                {
+                    mining.last_event_ms = miningJson.at("last_event_ms").get<std::uint64_t>();
+                }
+                if (miningJson.contains("buckets") && miningJson.at("buckets").is_array())
+                {
+                    const auto& bucketsJson = miningJson.at("buckets");
+                    mining.buckets.reserve(bucketsJson.size());
+                    for (const auto& bucketJson : bucketsJson)
+                    {
+                        if (!bucketJson.is_object())
+                        {
+                            throw std::invalid_argument("Telemetry bucket entries must be objects");
+                        }
+                        TelemetryBucket bucket;
+                        if (bucketJson.contains("id"))
+                        {
+                            bucket.id = bucketJson.at("id").get<std::string>();
+                        }
+                        if (bucketJson.contains("label"))
+                        {
+                            bucket.label = bucketJson.at("label").get<std::string>();
+                        }
+                        if (bucketJson.contains("session_total"))
+                        {
+                            bucket.session_total = bucketJson.at("session_total").get<double>();
+                        }
+                        if (bucketJson.contains("recent_total"))
+                        {
+                            bucket.recent_total = bucketJson.at("recent_total").get<double>();
+                        }
+                        mining.buckets.push_back(std::move(bucket));
+                    }
+                }
+                metrics.mining = mining;
+            }
+
+            if (telemetryJson.contains("history") && telemetryJson.at("history").is_object())
+            {
+                const auto& historyJson = telemetryJson.at("history");
+                TelemetryHistory history;
+                if (historyJson.contains("slice_seconds"))
+                {
+                    history.slice_seconds = historyJson.at("slice_seconds").get<double>();
+                }
+                if (historyJson.contains("capacity"))
+                {
+                    history.capacity = historyJson.at("capacity").get<std::uint32_t>();
+                }
+                if (historyJson.contains("saturated"))
+                {
+                    history.saturated = historyJson.at("saturated").get<bool>();
+                }
+                if (historyJson.contains("reset_markers_ms") && historyJson.at("reset_markers_ms").is_array())
+                {
+                    const auto& markers = historyJson.at("reset_markers_ms");
+                    history.reset_markers_ms.reserve(markers.size());
+                    for (const auto& marker : markers)
+                    {
+                        history.reset_markers_ms.push_back(marker.get<std::uint64_t>());
+                    }
+                }
+                if (historyJson.contains("slices") && historyJson.at("slices").is_array())
+                {
+                    const auto& slices = historyJson.at("slices");
+                    history.slices.reserve(slices.size());
+                    for (const auto& sliceJson : slices)
+                    {
+                        if (!sliceJson.is_object())
+                        {
+                            throw std::invalid_argument("Telemetry history slice entries must be objects");
+                        }
+                        TelemetryHistorySlice slice;
+                        if (sliceJson.contains("start_ms"))
+                        {
+                            slice.start_ms = sliceJson.at("start_ms").get<std::uint64_t>();
+                        }
+                        if (sliceJson.contains("duration_seconds"))
+                        {
+                            slice.duration_seconds = sliceJson.at("duration_seconds").get<double>();
+                        }
+                        if (sliceJson.contains("damage_dealt"))
+                        {
+                            slice.damage_dealt = sliceJson.at("damage_dealt").get<double>();
+                        }
+                        if (sliceJson.contains("damage_taken"))
+                        {
+                            slice.damage_taken = sliceJson.at("damage_taken").get<double>();
+                        }
+                        if (sliceJson.contains("mining_volume_m3"))
+                        {
+                            slice.mining_volume_m3 = sliceJson.at("mining_volume_m3").get<double>();
+                        }
+                        history.slices.push_back(std::move(slice));
+                    }
+                }
+
+                metrics.history = std::move(history);
+            }
+
+            if (metrics.combat.has_value() || metrics.mining.has_value() || metrics.history.has_value())
+            {
+                state.telemetry = std::move(metrics);
+            }
+        }
+
         if (state.heartbeat_ms == 0)
         {
             state.heartbeat_ms = state.generated_at_ms;
@@ -331,6 +488,90 @@ namespace overlay
         }
 
         json["source_online"] = state.source_online;
+
+        if (state.telemetry.has_value())
+        {
+            const auto& metrics = *state.telemetry;
+            nlohmann::json telemetryJson = nlohmann::json::object();
+
+            if (metrics.combat.has_value())
+            {
+                const auto& combat = *metrics.combat;
+                telemetryJson["combat"] = {
+                    {"total_damage_dealt", combat.total_damage_dealt},
+                    {"total_damage_taken", combat.total_damage_taken},
+                    {"recent_damage_dealt", combat.recent_damage_dealt},
+                    {"recent_damage_taken", combat.recent_damage_taken},
+                    {"recent_window_seconds", combat.recent_window_seconds},
+                    {"last_event_ms", combat.last_event_ms}
+                };
+            }
+
+            if (metrics.mining.has_value())
+            {
+                const auto& mining = *metrics.mining;
+                telemetryJson["mining"] = {
+                    {"total_volume_m3", mining.total_volume_m3},
+                    {"recent_volume_m3", mining.recent_volume_m3},
+                    {"recent_window_seconds", mining.recent_window_seconds},
+                    {"last_event_ms", mining.last_event_ms}
+                };
+                if (!mining.buckets.empty())
+                {
+                    nlohmann::json buckets = nlohmann::json::array();
+                    buckets.get_ref<nlohmann::json::array_t&>().reserve(mining.buckets.size());
+                    for (const auto& bucket : mining.buckets)
+                    {
+                        buckets.push_back({
+                            {"id", bucket.id},
+                            {"label", bucket.label},
+                            {"session_total", bucket.session_total},
+                            {"recent_total", bucket.recent_total}
+                        });
+                    }
+                    telemetryJson["mining"]["buckets"] = std::move(buckets);
+                }
+            }
+
+            if (metrics.history.has_value())
+            {
+                const auto& history = *metrics.history;
+                nlohmann::json historyJson = {
+                    {"slice_seconds", history.slice_seconds},
+                    {"capacity", history.capacity},
+                    {"saturated", history.saturated}
+                };
+
+                if (!history.reset_markers_ms.empty())
+                {
+                    historyJson["reset_markers_ms"] = history.reset_markers_ms;
+                }
+
+                if (!history.slices.empty())
+                {
+                    nlohmann::json slices = nlohmann::json::array();
+                    slices.get_ref<nlohmann::json::array_t&>().reserve(history.slices.size());
+                    for (const auto& slice : history.slices)
+                    {
+                        slices.push_back({
+                            {"start_ms", slice.start_ms},
+                            {"duration_seconds", slice.duration_seconds},
+                            {"damage_dealt", slice.damage_dealt},
+                            {"damage_taken", slice.damage_taken},
+                            {"mining_volume_m3", slice.mining_volume_m3}
+                        });
+                    }
+                    historyJson["slices"] = std::move(slices);
+                }
+
+                telemetryJson["history"] = std::move(historyJson);
+            }
+
+            if (!telemetryJson.empty())
+            {
+                json["telemetry"] = std::move(telemetryJson);
+            }
+        }
 
         return json;
     }

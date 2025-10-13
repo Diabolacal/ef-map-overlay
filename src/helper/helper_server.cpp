@@ -44,6 +44,72 @@ HelperServer::HelperServer(std::string host, int port, std::string authToken)
     configureRoutes();
 }
 
+void HelperServer::setTelemetrySummaryHandler(TelemetrySummaryHandler handler)
+{
+    telemetrySummaryHandler_ = std::move(handler);
+}
+
+void HelperServer::setTelemetryResetHandler(TelemetryResetHandler handler)
+{
+    telemetryResetHandler_ = std::move(handler);
+}
+
+void HelperServer::setFollowModeProvider(FollowModeProvider provider)
+{
+    followModeProvider_ = std::move(provider);
+}
+
+void HelperServer::setFollowModeUpdateHandler(FollowModeUpdateHandler handler)
+{
+    followModeUpdateHandler_ = std::move(handler);
+}
+
+bool HelperServer::updateFollowModeFlag(bool enabled)
+{
+    std::string serialized;
+    nlohmann::json json;
+    std::uint32_t version = overlay::schema_version;
+    std::uint64_t generatedAt = 0;
+
+    {
+        std::lock_guard<std::mutex> guard(overlayStateMutex_);
+        if (!hasOverlayState_.load() || latestOverlayState_.empty())
+        {
+            return false;
+        }
+
+        latestOverlayStateJson_["follow_mode_enabled"] = enabled;
+        latestOverlayStateJson_["heartbeat_ms"] = now_ms();
+        json = latestOverlayStateJson_;
+        serialized = json.dump();
+        latestOverlayState_ = serialized;
+        if (json.contains("version"))
+        {
+            version = json.at("version").get<std::uint32_t>();
+        }
+        if (json.contains("generated_at_ms"))
+        {
+            generatedAt = json.at("generated_at_ms").get<std::uint64_t>();
+        }
+        lastOverlayAcceptedAt_ = std::chrono::system_clock::now();
+        lastOverlayGeneratedAtMs_ = generatedAt;
+    }
+
+    const bool sharedOk = sharedMemoryWriter_.write(serialized, version, generatedAt);
+    if (!sharedOk)
+    {
+        spdlog::warn("Failed to publish follow mode update to shared memory");
+    }
+
+    if (websocketHub_)
+    {
+        nlohmann::json envelope{{"type", "overlay_state"}, {"state", json}};
+        websocketHub_->broadcastOverlayState(std::move(envelope));
+    }
+
+    return true;
+}
+
 HelperServer::~HelperServer()
 {
     stop();
@@ -327,6 +393,19 @@ void HelperServer::configureRoutes()
 {
     using namespace std::chrono;
 
+    server_.set_default_headers({
+        {"Access-Control-Allow-Origin", "*"},
+        {"Access-Control-Allow-Headers", "Content-Type, x-ef-overlay-token"},
+        {"Access-Control-Allow-Methods", "GET, POST, OPTIONS"}
+    });
+
+    server_.Options(".*", [](const httplib::Request&, httplib::Response& res) {
+        res.status = 204;
+        res.set_header("Access-Control-Allow-Origin", "*");
+        res.set_header("Access-Control-Allow-Headers", "Content-Type, x-ef-overlay-token");
+        res.set_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    });
+
     server_.set_error_handler([](const httplib::Request&, httplib::Response& res) {
         res.set_content("Resource not found", text_plain);
         res.status = 404;
@@ -429,6 +508,151 @@ void HelperServer::configureRoutes()
         };
 
         res.set_content(payload.dump(), application_json);
+        res.status = 200;
+    });
+
+    server_.Get("/telemetry/current", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!authorize(req, res))
+        {
+            return;
+        }
+
+        if (!telemetrySummaryHandler_)
+        {
+            res.set_content(make_error("Telemetry summary unavailable").dump(), application_json);
+            res.status = 503;
+            return;
+        }
+
+        auto payload = telemetrySummaryHandler_();
+        if (!payload.has_value())
+        {
+            res.set_content(make_error("Telemetry summary unavailable").dump(), application_json);
+            res.status = 503;
+            return;
+        }
+
+        res.set_content(payload->dump(), application_json);
+        res.status = 200;
+    });
+
+    server_.Get("/telemetry/history", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!authorize(req, res))
+        {
+            return;
+        }
+
+        if (!telemetrySummaryHandler_)
+        {
+            res.set_content(make_error("Telemetry summary unavailable").dump(), application_json);
+            res.status = 503;
+            return;
+        }
+
+        auto payload = telemetrySummaryHandler_();
+        if (!payload.has_value())
+        {
+            res.set_content(make_error("Telemetry summary unavailable").dump(), application_json);
+            res.status = 503;
+            return;
+        }
+
+        if (!payload->contains("history"))
+        {
+            res.set_content(make_error("Telemetry history unavailable").dump(), application_json);
+            res.status = 404;
+            return;
+        }
+
+        nlohmann::json response{
+            {"status", "ok"},
+            {"history", payload->at("history")}
+        };
+
+        res.set_content(response.dump(), application_json);
+        res.status = 200;
+    });
+
+    server_.Get("/settings/follow", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!authorize(req, res))
+        {
+            return;
+        }
+
+        if (!followModeProvider_)
+        {
+            res.set_content(make_error("Follow mode provider unavailable").dump(), application_json);
+            res.status = 503;
+            return;
+        }
+
+        const bool enabled = followModeProvider_();
+        nlohmann::json payload{{"status", "ok"}, {"enabled", enabled}};
+        res.set_content(payload.dump(), application_json);
+        res.status = 200;
+    });
+
+    server_.Post("/settings/follow", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!authorize(req, res))
+        {
+            return;
+        }
+
+        if (!followModeUpdateHandler_)
+        {
+            res.set_content(make_error("Follow mode update unavailable").dump(), application_json);
+            res.status = 503;
+            return;
+        }
+
+        auto json = nlohmann::json::parse(req.body, nullptr, false);
+        if (json.is_discarded() || !json.contains("enabled"))
+        {
+            res.set_content(make_error("Request body must include 'enabled' boolean").dump(), application_json);
+            res.status = 400;
+            return;
+        }
+
+        bool enabled = false;
+        try
+        {
+            enabled = json.at("enabled").get<bool>();
+        }
+        catch (const std::exception&)
+        {
+            res.set_content(make_error("'enabled' must be a boolean").dump(), application_json);
+            res.status = 400;
+            return;
+        }
+
+        const bool applied = followModeUpdateHandler_(enabled);
+        nlohmann::json payload{{"status", applied ? "ok" : "accepted"}, {"enabled", enabled}};
+        res.set_content(payload.dump(), application_json);
+        res.status = applied ? 200 : 202;
+    });
+
+    server_.Post("/telemetry/reset", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!authorize(req, res))
+        {
+            return;
+        }
+
+        if (!telemetryResetHandler_)
+        {
+            res.set_content(make_error("Telemetry reset unavailable").dump(), application_json);
+            res.status = 503;
+            return;
+        }
+
+        auto payload = telemetryResetHandler_();
+        if (!payload.has_value())
+        {
+            res.set_content(make_error("Telemetry reset failed").dump(), application_json);
+            res.status = 500;
+            return;
+        }
+
+        res.set_content(payload->dump(), application_json);
         res.status = 200;
     });
 

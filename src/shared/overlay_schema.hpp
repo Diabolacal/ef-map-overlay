@@ -9,7 +9,7 @@
 
 namespace overlay
 {
-    constexpr int schema_version = 2;
+    constexpr int schema_version = 4;
 
     struct Vec3f
     {
@@ -49,6 +49,58 @@ namespace overlay
         bool active{true};
     };
 
+    struct CombatTelemetry
+    {
+        double total_damage_dealt{0.0};
+        double total_damage_taken{0.0};
+        double recent_damage_dealt{0.0};
+        double recent_damage_taken{0.0};
+        double recent_window_seconds{30.0};
+        std::uint64_t last_event_ms{0};
+    };
+
+    struct TelemetryBucket
+    {
+        std::string id;
+        std::string label;
+        double session_total{0.0};
+        double recent_total{0.0};
+    };
+
+    struct MiningTelemetry
+    {
+        double total_volume_m3{0.0};
+        double recent_volume_m3{0.0};
+        double recent_window_seconds{120.0};
+        std::uint64_t last_event_ms{0};
+        std::vector<TelemetryBucket> buckets;
+    };
+
+    struct TelemetryHistorySlice
+    {
+        std::uint64_t start_ms{0};
+        double duration_seconds{0.0};
+        double damage_dealt{0.0};
+        double damage_taken{0.0};
+        double mining_volume_m3{0.0};
+    };
+
+    struct TelemetryHistory
+    {
+        double slice_seconds{300.0};
+        std::uint32_t capacity{0};
+        bool saturated{false};
+        std::vector<TelemetryHistorySlice> slices;
+        std::vector<std::uint64_t> reset_markers_ms;
+    };
+
+    struct TelemetryMetrics
+    {
+        std::optional<CombatTelemetry> combat;
+        std::optional<MiningTelemetry> mining;
+        std::optional<TelemetryHistory> history;
+    };
+
     struct RouteNode
     {
         std::string system_id;
@@ -71,6 +123,7 @@ namespace overlay
         bool follow_mode_enabled{false};
         std::optional<std::string> active_route_node_id;
         bool source_online{true};
+        std::optional<TelemetryMetrics> telemetry;
     };
 
     [[nodiscard]] OverlayState parse_overlay_state(const nlohmann::json& json);

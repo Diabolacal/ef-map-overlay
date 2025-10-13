@@ -4,6 +4,7 @@
 #include <chrono>
 #include <deque>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -74,6 +75,17 @@ public:
 
     OverlayStateStats getOverlayStateStats() const;
 
+    using TelemetrySummaryHandler = std::function<std::optional<nlohmann::json>()>;
+    using TelemetryResetHandler = std::function<std::optional<nlohmann::json>()>;
+
+    void setTelemetrySummaryHandler(TelemetrySummaryHandler handler);
+    void setTelemetryResetHandler(TelemetryResetHandler handler);
+    using FollowModeProvider = std::function<bool()>;
+    using FollowModeUpdateHandler = std::function<bool(bool)>;
+    void setFollowModeProvider(FollowModeProvider provider);
+    void setFollowModeUpdateHandler(FollowModeUpdateHandler handler);
+    bool updateFollowModeFlag(bool enabled);
+
 private:
     void configureRoutes();
     bool authorize(const httplib::Request& req, httplib::Response& res) const;
@@ -119,4 +131,9 @@ private:
 
     mutable std::mutex catalogMutex_;
     StarCatalogSummary starCatalogSummary_{};
+
+    TelemetrySummaryHandler telemetrySummaryHandler_{};
+    TelemetryResetHandler telemetryResetHandler_{};
+    FollowModeProvider followModeProvider_{};
+    FollowModeUpdateHandler followModeUpdateHandler_{};
 };

@@ -48,56 +48,53 @@
 - ✅ **DX12 overlay hook** – Swap-chain hook renders ImGui window, handles input capture (F8 toggle, drag/move, edge resize) without impacting gameplay.
 - ✅ **Automation** – PowerShell smoke script coordinates helper launch, payload post, and DLL injection for quick manual validation.
 - ✅ **Overlay state v2 schema + event queue** – Shared-memory schema updated with player marker, highlights, camera pose, HUD hints, follow flag; overlay ↔ helper event ring buffer published via shared memory + HTTP drain endpoint for testing.
-- ✅ **Log watcher groundwork** – Catalog resolver and shared schema fields are ready for live telemetry (system name → canonical ID); integration work now leads roadmap.
+- ✅ **Log watcher groundwork** – Existing local-chat parser already resolves system IDs from rotating gamelogs; helper reports log locations for diagnostics.
+- ✅ **EF helper panel preview** – Web app now surfaces a helper panel and Pages preview for validating status flows before production deployment.
 - ⏸️ **Native starfield renderer polish** – Camera-aligned renderer exists but visual tuning is paused after artifact investigation; resume once helper-first backlog lands.
 - ▢ **Installer & signing** – Deferred until we stabilize feature set; helper currently launched manually.
 - ▢ **Browser CTA** – Web → helper bridge still manual; custom protocol & detection flow to be designed.
 
-## 7. Phase 2 – Helper-first execution (Active)
-Focus: deliver helper-driven wins (tray shell, log watcher, telemetry, browser bridge) before revisiting native visual polish. The starfield renderer remains in place but is paused until these user-facing capabilities ship.
+## 7. Roadmap (Q4 2025)
+The helper, overlay, and EF map web panel will continue to evolve together. All gameplay telemetry stays on the pilot’s machine; Cloudflare usage metrics remain lightweight and limited to helper adoption counters (e.g., connected sessions).
 
-> **Guiding principle:** keep pilots informed without alt-tabbing. Invest in automation, telemetry, and control surfaces that the helper can deliver immediately, while preserving the renderer as a follow-up polish item.
+### Phase 1 – Helper ↔ UI grounding *(active)*
+- Validate end-to-end helper state reporting across the local helper, overlay HUD, and EF helper panel.
+- Expose an opt-in “Follow current system” toggle in both the helper UI and the web panel (disabled until data flow is confirmed).
+- Tighten the existing tray/runtime UX so operators can launch the helper without console windows.
 
-### 7.0 Helper runtime UX shell *(in-flight)*
-Deliver a lightweight tray experience around the existing helper runtime so operators can launch, monitor, and control the overlay without touching console windows.
+**Validation:** helper status transitions display correctly in the Pages preview; usage counters increment in `/api/stats`; tray diagnostics show log paths and last update timestamps.
 
-1. **Runtime extraction** – Factor current helper process control into a reusable `HelperRuntime` that can be driven by both console and tray entry points.
-2. **Tray UI scaffold** – Add a notification-area app with start/stop, inject, and "post sample state" commands, plus status indicator for overlay attachment and event activity.
-3. **Smoke tooling refresh** – Update `tools/overlay_smoke.ps1` to launch the tray shell automatically and exercise sample payload + injection flows.
-4. **Diagnostics hooks** – Surface quick links for logs/config folders and report last error in the tray tooltip to simplify manual testing.
+### Phase 2 – Mining telemetry foundation
+- Extend the log watcher to accumulate mining yield totals and rolling rates (per ore type) using the real game logs—no synthetic fixtures required.
+- Surface graphs in the helper window and overlay HUD, with a session reset control.
+- Keep telemetry local; only aggregate adoption metrics (helper connected) are reported to Cloudflare for health tracking.
 
-> Packaging/signing remain deferred; this milestone ships a developer-quality shell only, ensuring future features (log watcher, event bridge) have a visible home.
+**Validation:** live mining sessions update graphs in both helper and overlay; reset clears session totals; smoke script confirms no FPS regressions.
 
-### 7.1 Game log watcher & location telemetry
-1. **Log watcher ingestion**
-   - Hook gamelog rotation, parse system-change lines, and reuse the existing resolver to publish canonical system IDs.
-   - Emit helper heartbeat fields (e.g., last seen system, time since update) for overlay and browser consumption.
-2. **Overlay/state wiring**
-   - Pipe location updates into shared memory, expose opt-in controls via tray toggle, and relay events to the web client.
-3. **Resilience pass**
-   - Guard against missing logs, chat spam, multi-client conflicts; document failure modes in helper diagnostics.
+### Phase 3 – Combat telemetry
+- Reuse the mining pipeline to track DPS in/out and combat events.
+- Provide configurable charts and peak indicators in helper/overlay UIs.
+- Reconfirm privacy posture (local-only) and reuse minimal usage metrics.
 
-### 7.2 Combat & activity telemetry
-1. **Combat telemetry overlay** *(helper & overlay)*
-   - Tail combat logs to aggregate inbound/outbound DPS in rolling windows and surface quick-glance charts inside the overlay.
-   - Provide ImGui-based gauges/graphs, reset heuristics (dock, jump), and privacy controls for pilots who opt out.
-2. **Session tracking modules**
-   - Capture session duration, death/jump milestones, and mining yield hooks for future analytics; publish to overlay + browser bridge.
+**Validation:** live combat logs update HUD charts; helper diagnostics show recent event counts; overlay remains stable.
 
-### 7.3 Browser integration & event bridge
-1. **Helper discovery** – Detect helper availability from the web app, expose “Open in overlay” CTA, and design fallback copy when helper is offline.
-2. **Event loop** – Forward overlay events (waypoint complete, opacity toggle) through the helper to the browser via authenticated HTTP/WebSocket channel.
-3. **CTA polish** – Provide in-app prompts linking to helper download/install once packaging is ready; for now keep scoped to developer flows.
+### Phase 4 – Live location follow mode
+- Use the existing chat parser to keep EF Map centered on the pilot’s current system with a distinct highlight.
+- Provide synchronized toggles in helper, overlay, and web app to enable/disable follow mode and temporarily suspend on user interaction.
 
-### 7.4 Native renderer polish *(paused until helper-first goals complete)*
-1. **Artifact fix & tuning** – Revisit the diagonal starfield issue once telemetry milestones ship; add waypoint markers, selection glow, and performance instrumentation as follow-up work.
-2. **HUD controls** – Resume ImGui control surface for follow-mode, opacity, and route actions after renderer visuals are stable.
+**Validation:** jumping between systems recenters the map until the user interacts; toggles stay in sync across surfaces.
 
-### 7.5 Packaging & UX (later)
-1. **Installer & production tray polish** *(helper)*
-   - Convert the developer tray shell into a signed distribution (MSI/MSIX) once core features stabilize.
-   - Layer in auto-update, first-run guidance, and per-display profiles for end users.
-   - Fold settings panes (hotkeys, log watcher toggles) into the tray UI once the underlying capabilities are complete.
+### Phase 5 – Bookmark & route enhancements
+- Add an in-game overlay action to create EF Map bookmarks (local helper persists until a remote storage decision is made).
+- Display the “next system” in the active route within the overlay (read-only; route export stays manual via notes).
+
+**Validation:** overlay action creates bookmarks visible in the browser; helper logs track the command; route indicator updates with each jump.
+
+### Phase 6 – Packaging & pre-release readiness
+- Harden the helper tray experience, bundle with an installer, and update download CTA/links inside the EF helper panel.
+- Document installation and smoke steps in both repos; sign binaries when feature set stabilizes.
+
+**Validation:** installer builds and installs cleanly; first-run walkthrough launches helper and validates overlay attachment; decision logs capture release readiness.
 
 ## 8. Tooling & Tech Stack
 - Language: C++20 for DLL & helper core (optionally C# for helper UI via WinUI 3).
@@ -124,10 +121,8 @@ Deliver a lightweight tray experience around the existing helper runtime so oper
 - How to synchronize route data securely (JWT token exchange? local ephemeral key?).
 
 ## 11. Next Steps
-1. Ship the helper tray shell MVP (runtime extraction, tray UI, smoke tooling refresh).
-2. Prototype the helper log watcher + location toggle, exposing status through the tray.
-3. Bridge helper event queue to EF-Map web client once the tray/log watcher are stable.
-4. Stand up the combat telemetry overlay using the shared watcher pipeline.
-5. Polish the native renderer (waypoint markers, selection glow, performance instrumentation).
-6. Design browser CTA & helper discovery flow; mirror plan updates in `EF-Map-main`.
-7. Revisit packaging milestone once native rendering & event loop prove stable.
+1. Finish Phase 1 polish: helper tray UX, synchronized status in web panel, minimal usage metrics.
+2. Kick off Phase 2 mining telemetry work (helper aggregation + overlay graphs) using live mining sessions for testing.
+3. Plan combat telemetry implementation once mining pipeline is validating.
+4. Draft UI flows for follow-mode toggles to unblock Phase 4 development.
+5. Keep packaging on hold until telemetry and follow mode land.

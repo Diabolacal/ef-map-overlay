@@ -78,6 +78,46 @@ namespace
         state.camera_pose = pose;
         state.hud_hints.push_back(overlay::HudHint{"hint-1", "Press F8 to toggle", true, true});
         state.active_route_node_id = std::string{"30000003"};
+        overlay::CombatTelemetry combat;
+        combat.total_damage_dealt = 3200.0;
+        combat.total_damage_taken = 1500.0;
+        combat.recent_damage_dealt = 600.0;
+        combat.recent_damage_taken = 200.0;
+        combat.recent_window_seconds = 30.0;
+        combat.last_event_ms = 123456799ULL;
+        overlay::MiningTelemetry mining;
+        mining.total_volume_m3 = 540.0;
+        mining.recent_volume_m3 = 180.0;
+        mining.recent_window_seconds = 120.0;
+        mining.last_event_ms = 123456889ULL;
+        overlay::TelemetryBucket veldsparBucket;
+        veldsparBucket.id = "veldspar";
+        veldsparBucket.label = "Veldspar";
+        veldsparBucket.session_total = 480.0;
+        veldsparBucket.recent_total = 160.0;
+        overlay::TelemetryBucket pyroxeresBucket;
+        pyroxeresBucket.id = "pyroxeres";
+        pyroxeresBucket.label = "Pyroxeres";
+        pyroxeresBucket.session_total = 60.0;
+        pyroxeresBucket.recent_total = 20.0;
+        mining.buckets = {veldsparBucket, pyroxeresBucket};
+        overlay::TelemetryMetrics telemetry;
+        telemetry.combat = combat;
+        telemetry.mining = mining;
+        overlay::TelemetryHistory history;
+        history.slice_seconds = 300.0;
+        history.capacity = 288;
+        history.saturated = false;
+        overlay::TelemetryHistorySlice slice;
+        slice.start_ms = 123456000ULL;
+        slice.duration_seconds = 300.0;
+        slice.damage_dealt = 500.0;
+        slice.damage_taken = 120.0;
+        slice.mining_volume_m3 = 90.0;
+        history.slices.push_back(slice);
+        history.reset_markers_ms = {123455000ULL};
+        telemetry.history = history;
+        state.telemetry = telemetry;
         return state;
     }
 }
@@ -119,6 +159,44 @@ int main()
         if (!restored.source_online)
         {
             throw std::runtime_error("source_online flag expected true");
+        }
+
+        if (!restored.telemetry.has_value())
+        {
+            throw std::runtime_error("Expected telemetry to round-trip");
+        }
+
+        if (!restored.telemetry->combat.has_value() || restored.telemetry->combat->total_damage_dealt != 3200.0)
+        {
+            throw std::runtime_error("Combat telemetry mismatch after round-trip");
+        }
+
+        if (!restored.telemetry->mining.has_value() || restored.telemetry->mining->total_volume_m3 != 540.0)
+        {
+            throw std::runtime_error("Mining telemetry mismatch after round-trip");
+        }
+
+        if (!restored.telemetry->mining->buckets.empty())
+        {
+            const auto& bucket = restored.telemetry->mining->buckets.front();
+            if (bucket.id != "veldspar" || bucket.session_total != 480.0)
+            {
+                throw std::runtime_error("Telemetry bucket values did not round-trip");
+            }
+        }
+        else
+        {
+            throw std::runtime_error("Expected telemetry buckets to round-trip");
+        }
+
+        if (!restored.telemetry->history.has_value())
+        {
+            throw std::runtime_error("Expected telemetry history to round-trip");
+        }
+        const auto& history = *restored.telemetry->history;
+        if (history.slices.empty() || history.slices.front().damage_dealt != 500.0)
+        {
+            throw std::runtime_error("Telemetry history slices mismatch after round-trip");
         }
     }, failures);
 
@@ -168,6 +246,63 @@ int main()
         if (!id.has_value() || *id != "2112049754")
         {
             throw std::runtime_error("Unexpected character id parsed");
+        }
+    }, failures);
+
+    run_case("combat damage parsing", []() {
+        const auto dealtLine = std::string{"[ 2025.10.13 18:20:00 ] (combat) Your 250mm Railgun I hits Pirate Frigate for 1,234.5 damage."};
+        auto dealt = helper::logs::parse_combat_damage_line(dealtLine);
+        if (!dealt.has_value())
+        {
+            throw std::runtime_error("Expected damage dealt event");
+        }
+        if (!dealt->playerDealt)
+        {
+            throw std::runtime_error("Damage direction misclassified for dealt line");
+        }
+        if (std::abs(dealt->amount - 1234.5) > 1e-3)
+        {
+            throw std::runtime_error("Unexpected damage amount parsed");
+        }
+        if (dealt->counterparty != "Pirate Frigate")
+        {
+            throw std::runtime_error("Unexpected target parsed for dealt damage");
+        }
+
+        const auto takenLine = std::string{"[ 2025.10.13 18:21:00 ] (combat) Pirate Frigate hits you for 987.6 damage."};
+        auto taken = helper::logs::parse_combat_damage_line(takenLine);
+        if (!taken.has_value())
+        {
+            throw std::runtime_error("Expected damage taken event");
+        }
+        if (taken->playerDealt)
+        {
+            throw std::runtime_error("Damage direction misclassified for incoming line");
+        }
+        if (std::abs(taken->amount - 987.6) > 1e-3)
+        {
+            throw std::runtime_error("Unexpected incoming damage amount");
+        }
+        if (taken->counterparty != "Pirate Frigate")
+        {
+            throw std::runtime_error(std::string{"Unexpected counterparty parsed for incoming damage: "} + taken->counterparty);
+        }
+    }, failures);
+
+    run_case("mining yield parsing", []() {
+        const auto line = std::string{"[ 2025.10.13 18:22:00 ] (notify) You have mined 1,200 units of Veldspar worth 345.0 m3."};
+        auto yield = helper::logs::parse_mining_yield_line(line);
+        if (!yield.has_value())
+        {
+            throw std::runtime_error("Expected mining yield event");
+        }
+        if (std::abs(yield->volumeM3 - 345.0) > 1e-3)
+        {
+            throw std::runtime_error("Unexpected mining volume parsed");
+        }
+        if (yield->resource != "Veldspar")
+        {
+            throw std::runtime_error("Unexpected resource name parsed");
         }
     }, failures);
 

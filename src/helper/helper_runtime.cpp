@@ -13,6 +13,8 @@
 #include <utility>
 #include <sstream>
 #include <system_error>
+#include <cctype>
+#include <nlohmann/json.hpp>
 
 namespace
 {
@@ -116,6 +118,135 @@ namespace
         const auto now = std::chrono::system_clock::now();
         return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count());
     }
+
+    std::string normalize_bucket_id(const std::string& label)
+    {
+        std::string id;
+        id.reserve(label.size());
+        for (char ch : label)
+        {
+            if (std::isalnum(static_cast<unsigned char>(ch)))
+            {
+                id.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+            }
+            else if (!id.empty() && id.back() != '-')
+            {
+                id.push_back('-');
+            }
+        }
+
+        while (!id.empty() && id.back() == '-')
+        {
+            id.pop_back();
+        }
+
+        if (id.empty())
+        {
+            id = "resource";
+        }
+
+        return id;
+    }
+
+    nlohmann::json telemetry_metrics_json(const helper::logs::TelemetrySummary& summary)
+    {
+        nlohmann::json metrics = nlohmann::json::object();
+
+        if (summary.combat.has_value())
+        {
+            const auto& combat = *summary.combat;
+            nlohmann::json combatJson = {
+                {"total_damage_dealt", combat.totalDamageDealt},
+                {"total_damage_taken", combat.totalDamageTaken},
+                {"recent_damage_dealt", combat.recentDamageDealt},
+                {"recent_damage_taken", combat.recentDamageTaken},
+                {"recent_window_seconds", combat.recentWindowSeconds},
+                {"last_event_ms", combat.lastEventMs}
+            };
+            metrics["combat"] = std::move(combatJson);
+        }
+
+        if (summary.mining.has_value())
+        {
+            const auto& mining = *summary.mining;
+            nlohmann::json miningJson = {
+                {"total_volume_m3", mining.totalVolumeM3},
+                {"recent_volume_m3", mining.recentVolumeM3},
+                {"recent_window_seconds", mining.recentWindowSeconds},
+                {"last_event_ms", mining.lastEventMs}
+            };
+
+            if (!mining.buckets.empty())
+            {
+                nlohmann::json buckets = nlohmann::json::array();
+                buckets.get_ref<nlohmann::json::array_t&>().reserve(mining.buckets.size());
+                for (const auto& bucket : mining.buckets)
+                {
+                    buckets.push_back({
+                        {"id", normalize_bucket_id(bucket.resource)},
+                        {"label", bucket.resource},
+                        {"session_total_m3", bucket.sessionTotalM3},
+                        {"recent_total_m3", bucket.recentVolumeM3}
+                    });
+                }
+                miningJson["buckets"] = std::move(buckets);
+            }
+
+            metrics["mining"] = std::move(miningJson);
+        }
+
+        if (summary.history.has_value())
+        {
+            const auto& history = *summary.history;
+            nlohmann::json historyJson = {
+                {"slice_seconds", history.sliceSeconds},
+                {"capacity", history.capacity},
+                {"saturated", history.saturated}
+            };
+
+            if (!history.resetMarkersMs.empty())
+            {
+                historyJson["reset_markers_ms"] = history.resetMarkersMs;
+            }
+
+            if (!history.slices.empty())
+            {
+                nlohmann::json slices = nlohmann::json::array();
+                slices.get_ref<nlohmann::json::array_t&>().reserve(history.slices.size());
+                for (const auto& slice : history.slices)
+                {
+                    slices.push_back({
+                        {"start_ms", slice.startMs},
+                        {"duration_seconds", slice.durationSeconds},
+                        {"damage_dealt", slice.damageDealt},
+                        {"damage_taken", slice.damageTaken},
+                        {"mining_volume_m3", slice.miningVolumeM3}
+                    });
+                }
+                historyJson["slices"] = std::move(slices);
+            }
+
+            metrics["history"] = std::move(historyJson);
+        }
+
+        return metrics;
+    }
+
+    nlohmann::json telemetry_summary_payload(const helper::logs::TelemetrySummary& summary)
+    {
+        nlohmann::json payload{
+            {"status", "ok"},
+            {"generated_at_ms", now_ms()}
+        };
+
+        auto metrics = telemetry_metrics_json(summary);
+        for (auto& item : metrics.items())
+        {
+            payload[item.key()] = std::move(item.value());
+        }
+
+        return payload;
+    }
 }
 
 HelperRuntime::HelperRuntime(Config config)
@@ -186,13 +317,65 @@ bool HelperRuntime::start()
             [this](const helper::logs::LogWatcherStatus& status) {
                 std::lock_guard<std::mutex> guard(statusMutex_);
                 lastLogWatcherStatus_ = status;
+            },
+            [this]() {
+                return followModeEnabled_.load();
             });
     }
+
+    if (logWatcher_)
+    {
+        logWatcher_->setFollowModeSupplier([this]() {
+            return followModeEnabled_.load();
+        });
+    }
+
+    server_.setTelemetrySummaryHandler([this]() -> std::optional<nlohmann::json> {
+        if (!logWatcher_)
+        {
+            return std::nullopt;
+        }
+        auto summary = logWatcher_->telemetrySnapshot();
+        return telemetry_summary_payload(summary);
+    });
+
+    server_.setTelemetryResetHandler([this]() -> std::optional<nlohmann::json> {
+        if (!logWatcher_)
+
+    server_.setFollowModeProvider([this]() {
+        return followModeEnabled_.load();
+    });
+
+    server_.setFollowModeUpdateHandler([this](bool enabled) {
+        return applyFollowModeSetting(enabled, "http");
+    });
+        {
+            return std::nullopt;
+        }
+        const auto resetTimePoint = std::chrono::system_clock::now();
+        auto summary = logWatcher_->resetTelemetrySession();
+        const auto resetMs = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(resetTimePoint.time_since_epoch()).count());
+        {
+            std::lock_guard<std::mutex> guard(statusMutex_);
+            lastTelemetryResetAt_ = resetTimePoint;
+            lastError_.clear();
+            lastLogWatcherStatus_ = logWatcher_->status();
+        }
+        nlohmann::json telemetry = telemetry_metrics_json(summary);
+        telemetry["generated_at_ms"] = resetMs;
+        nlohmann::json response{
+            {"status", "ok"},
+            {"reset_ms", resetMs},
+            {"telemetry", std::move(telemetry)}
+        };
+        return response;
+    });
 
     logWatcher_->start();
     {
         std::lock_guard<std::mutex> guard(statusMutex_);
         lastLogWatcherStatus_ = logWatcher_->status();
+        lastTelemetryResetAt_.reset();
     }
 
     loadStarCatalog();
@@ -270,6 +453,7 @@ HelperRuntime::Status HelperRuntime::getStatus() const
             status.combatLogFile = lastLogWatcherStatus_->combatFile;
             status.location = lastLogWatcherStatus_->location;
             status.combat = lastLogWatcherStatus_->combat;
+            status.telemetry = lastLogWatcherStatus_->telemetry;
             status.logWatcherRunning = lastLogWatcherStatus_->running;
             status.logWatcherError = lastLogWatcherStatus_->lastError;
         }
@@ -296,7 +480,11 @@ HelperRuntime::Status HelperRuntime::getStatus() const
             status.starCatalogBboxMin = overlay::Vec3f{};
             status.starCatalogBboxMax = overlay::Vec3f{};
         }
+
+        status.lastTelemetryResetAt = lastTelemetryResetAt_;
     }
+
+        status.followModeEnabled = followModeEnabled_.load();
 
     return status;
 }
@@ -425,6 +613,39 @@ void HelperRuntime::eventPump()
     {
         if (auto drained = eventReader_.drain(); !drained.events.empty() || drained.dropped > 0)
         {
+            for (const auto& event : drained.events)
+            {
+                if (event.type == overlay::OverlayEventType::FollowModeToggled)
+                {
+                    bool desired = !followModeEnabled_.load();
+                    if (!event.payload.empty())
+                    {
+                        try
+                        {
+                            const auto json = nlohmann::json::parse(event.payload);
+                            if (json.contains("enabled"))
+                            {
+                                desired = json.at("enabled").get<bool>();
+                            }
+                            else if (json.contains("requested"))
+                            {
+                                const bool requested = json.at("requested").get<bool>();
+                                if (!requested)
+                                {
+                                    desired = followModeEnabled_.load();
+                                }
+                            }
+                        }
+                        catch (const std::exception& ex)
+                        {
+                            spdlog::debug("Failed to parse follow toggle payload: {}", ex.what());
+                        }
+                    }
+
+                    applyFollowModeSetting(desired, "event");
+                }
+            }
+
             server_.recordOverlayEvents(std::move(drained.events), drained.dropped);
         }
 
@@ -504,7 +725,7 @@ overlay::OverlayState HelperRuntime::buildSampleOverlayState() const
         }
     };
 
-    state.follow_mode_enabled = true;
+    state.follow_mode_enabled = followModeEnabled_.load();
     state.active_route_node_id = state.route.size() > 1 ? std::optional<std::string>{state.route[1].system_id} : std::nullopt;
     state.source_online = true;
 
@@ -627,4 +848,55 @@ void HelperRuntime::loadStarCatalog()
     }
 
     server_.updateStarCatalogSummary(std::move(summary));
+}
+
+std::optional<helper::logs::TelemetrySummary> HelperRuntime::resetTelemetrySession()
+{
+    if (!isRunning())
+    {
+        if (!start())
+        {
+            return std::nullopt;
+        }
+    }
+
+    if (!logWatcher_)
+    {
+        setError("Telemetry reset unavailable (log watcher offline)");
+        return std::nullopt;
+    }
+
+    const auto resetTimePoint = std::chrono::system_clock::now();
+    auto summary = logWatcher_->resetTelemetrySession();
+    {
+        std::lock_guard<std::mutex> guard(statusMutex_);
+        lastTelemetryResetAt_ = resetTimePoint;
+        lastError_.clear();
+        lastLogWatcherStatus_ = logWatcher_->status();
+    }
+
+    spdlog::info("Telemetry session reset via helper runtime");
+    return summary;
+}
+
+bool HelperRuntime::applyFollowModeSetting(bool enabled, std::string_view source)
+{
+    const bool previous = followModeEnabled_.exchange(enabled);
+    const bool changed = previous != enabled;
+
+    if (changed)
+    {
+        spdlog::info("Follow mode {} via {}", enabled ? "enabled" : "disabled", source);
+    }
+    else
+    {
+        spdlog::debug("Follow mode already {} (source: {})", enabled ? "enabled" : "disabled", source);
+    }
+
+    if (changed && !server_.updateFollowModeFlag(enabled))
+    {
+        spdlog::debug("Follow mode update deferred; overlay state not yet available");
+    }
+
+    return changed;
 }

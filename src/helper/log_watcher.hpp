@@ -5,11 +5,13 @@
 #include <condition_variable>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
 #include <vector>
+#include <map>
 
 #include "overlay_schema.hpp"
 #include "system_resolver.hpp"
@@ -32,6 +34,69 @@ namespace helper::logs
         std::string lastCombatLine;
     };
 
+    struct CombatTelemetrySnapshot
+    {
+        double totalDamageDealt{0.0};
+        double totalDamageTaken{0.0};
+        double recentDamageDealt{0.0};
+        double recentDamageTaken{0.0};
+        double recentWindowSeconds{30.0};
+        std::uint64_t lastEventMs{0};
+        [[nodiscard]] bool hasData() const
+        {
+            return totalDamageDealt > 0.0 || totalDamageTaken > 0.0 || lastEventMs != 0;
+        }
+    };
+
+    struct MiningBucketSnapshot
+    {
+        std::string resource;
+        double sessionTotalM3{0.0};
+        double recentVolumeM3{0.0};
+    };
+
+    struct MiningTelemetrySnapshot
+    {
+        double totalVolumeM3{0.0};
+        double recentVolumeM3{0.0};
+        double recentWindowSeconds{120.0};
+        std::uint64_t lastEventMs{0};
+        std::vector<MiningBucketSnapshot> buckets;
+        [[nodiscard]] bool hasData() const
+        {
+            return totalVolumeM3 > 0.0 || lastEventMs != 0;
+        }
+    };
+
+    struct TelemetryHistorySliceSnapshot
+    {
+        std::uint64_t startMs{0};
+        double durationSeconds{0.0};
+        double damageDealt{0.0};
+        double damageTaken{0.0};
+        double miningVolumeM3{0.0};
+    };
+
+    struct TelemetryHistorySnapshot
+    {
+        double sliceSeconds{300.0};
+        std::uint32_t capacity{0};
+        bool saturated{false};
+        std::vector<TelemetryHistorySliceSnapshot> slices;
+        std::vector<std::uint64_t> resetMarkersMs;
+        [[nodiscard]] bool hasData() const
+        {
+            return !slices.empty();
+        }
+    };
+
+    struct TelemetrySummary
+    {
+        std::optional<CombatTelemetrySnapshot> combat;
+        std::optional<MiningTelemetrySnapshot> mining;
+        std::optional<TelemetryHistorySnapshot> history;
+    };
+
     struct LogWatcherStatus
     {
         bool running{false};
@@ -41,6 +106,7 @@ namespace helper::logs
         std::filesystem::path combatFile;
         std::optional<LocationSample> location;
         std::optional<CombatSample> combat;
+        TelemetrySummary telemetry;
         std::string lastError;
     };
 
@@ -56,8 +122,9 @@ namespace helper::logs
 
         using PublishCallback = std::function<void(const overlay::OverlayState& state, std::size_t payloadBytes)>;
         using StatusCallback = std::function<void(const LogWatcherStatus& status)>;
+        using FollowModeSupplier = std::function<bool()>;
 
-    LogWatcher(Config config, const SystemResolver& resolver, PublishCallback publishCallback, StatusCallback statusCallback);
+        LogWatcher(Config config, const SystemResolver& resolver, PublishCallback publishCallback, StatusCallback statusCallback, FollowModeSupplier followSupplier = {});
         ~LogWatcher();
 
         LogWatcher(const LogWatcher&) = delete;
@@ -67,6 +134,11 @@ namespace helper::logs
         void stop();
 
         LogWatcherStatus status() const;
+
+    TelemetrySummary telemetrySnapshot();
+    TelemetrySummary resetTelemetrySession();
+
+        void setFollowModeSupplier(FollowModeSupplier supplier);
 
     private:
         enum class TextEncoding
@@ -109,14 +181,22 @@ namespace helper::logs
         std::optional<std::filesystem::path> latestChatLogPath(const std::filesystem::path& directory) const;
         std::optional<std::filesystem::path> latestCombatLogPath(const std::filesystem::path& directory) const;
         void publishStateIfNeeded(const LogWatcherStatus& snapshot, bool forcePublish);
-        static overlay::OverlayState buildOverlayState(const LogWatcherStatus& snapshot);
+        overlay::OverlayState buildOverlayState(const LogWatcherStatus& snapshot) const;
         static std::string buildStatusNotes(const LogWatcherStatus& snapshot);
         static std::uint64_t now_ms();
+        bool followModeEnabled() const;
 
         Config config_;
     const SystemResolver& resolver_;
     PublishCallback publishCallback_;
     StatusCallback statusCallback_;
+
+    class CombatTelemetryAggregator;
+    class MiningTelemetryAggregator;
+    class TelemetryHistoryAggregator;
+    std::unique_ptr<CombatTelemetryAggregator> combatTelemetryAggregator_;
+    std::unique_ptr<MiningTelemetryAggregator> miningTelemetryAggregator_;
+    std::unique_ptr<TelemetryHistoryAggregator> telemetryHistoryAggregator_;
 
         mutable std::mutex mutex_;
         std::condition_variable cv_;
@@ -131,5 +211,6 @@ namespace helper::logs
         std::filesystem::file_time_type combatWriteTime_{};
         std::optional<std::string> lastPublishedSystemId_;
         std::chrono::system_clock::time_point lastPublishedAt_{};
+        FollowModeSupplier followModeSupplier_{};
     };
 }

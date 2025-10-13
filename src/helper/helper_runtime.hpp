@@ -10,6 +10,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 
 #include "event_channel.hpp"
@@ -49,6 +50,7 @@ public:
         std::filesystem::path combatLogFile;
         std::optional<helper::logs::LocationSample> location;
         std::optional<helper::logs::CombatSample> combat;
+        helper::logs::TelemetrySummary telemetry;
         bool logWatcherRunning{false};
         std::string logWatcherError;
         bool starCatalogLoaded{false};
@@ -58,6 +60,8 @@ public:
     overlay::Vec3f starCatalogBboxMin{};
     overlay::Vec3f starCatalogBboxMax{};
         std::string starCatalogError;
+        std::optional<std::chrono::system_clock::time_point> lastTelemetryResetAt;
+        bool followModeEnabled{true};
     };
 
     explicit HelperRuntime(Config config);
@@ -74,6 +78,7 @@ public:
 
     bool postSampleOverlayState();
     bool injectOverlay(const std::wstring& processName = L"exefile.exe");
+    std::optional<helper::logs::TelemetrySummary> resetTelemetrySession();
 
     HelperServer& server() noexcept { return server_; }
     const HelperServer& server() const noexcept { return server_; }
@@ -85,6 +90,7 @@ private:
     void setError(std::string message) const;
     void setInjectionMessage(std::string message, bool success);
     void loadStarCatalog();
+    bool applyFollowModeSetting(bool enabled, std::string_view source);
 
     Config config_;
     HelperServer server_;
@@ -96,6 +102,7 @@ private:
     mutable std::mutex statusMutex_;
     std::optional<std::chrono::system_clock::time_point> lastSampleAt_;
     std::optional<std::chrono::system_clock::time_point> lastInjectionAt_;
+    std::optional<std::chrono::system_clock::time_point> lastTelemetryResetAt_;
     mutable std::string lastError_;
     mutable std::string lastInjectionMessage_;
     mutable bool lastInjectionSuccess_{false};
@@ -113,4 +120,5 @@ private:
     std::condition_variable eventCv_;
 
     helper::logs::SystemResolver systemResolver_;
+    std::atomic_bool followModeEnabled_{true};
 };
