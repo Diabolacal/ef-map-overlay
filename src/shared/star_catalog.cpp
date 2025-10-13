@@ -1,5 +1,6 @@
 #include "star_catalog.hpp"
 
+#include <cctype>
 #include <cstring>
 #include <fstream>
 #include <stdexcept>
@@ -29,12 +30,101 @@ namespace overlay
             }
             return cursor;
         }
+
+        bool is_ascii_space(char ch)
+        {
+            switch (ch)
+            {
+            case ' ': case '\t': case '\r': case '\n': case '\f': case '\v':
+                return true;
+            default:
+                return false;
+            }
+        }
+
+        std::string normalize_name(std::string_view name)
+        {
+            auto trim = [](std::string_view value) {
+                std::size_t start = 0;
+                while (start < value.size() && is_ascii_space(value[start]))
+                {
+                    ++start;
+                }
+                if (start == value.size())
+                {
+                    return std::string_view{};
+                }
+                std::size_t end = value.size();
+                while (end > start && is_ascii_space(value[end - 1]))
+                {
+                    --end;
+                }
+                return value.substr(start, end - start);
+            };
+
+            const auto trimmed = trim(name);
+            if (trimmed.empty())
+            {
+                return {};
+            }
+
+            std::string output;
+            output.reserve(trimmed.size());
+            bool lastWasSpace = false;
+
+            for (char ch : trimmed)
+            {
+                if (is_ascii_space(ch))
+                {
+                    if (!output.empty() && !lastWasSpace)
+                    {
+                        output.push_back(' ');
+                        lastWasSpace = true;
+                    }
+                }
+                else
+                {
+                    output.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+                    lastWasSpace = false;
+                }
+            }
+
+            if (!output.empty() && output.back() == ' ')
+            {
+                output.pop_back();
+            }
+
+            return output;
+        }
     }
 
     const StarCatalogRecord* StarCatalog::find_by_system_id(std::uint32_t system_id) const
     {
         const auto it = index_by_system_id_.find(system_id);
         if (it == index_by_system_id_.end())
+        {
+            return nullptr;
+        }
+
+        const auto index = it->second;
+        if (index >= records.size())
+        {
+            return nullptr;
+        }
+
+        return &records[index];
+    }
+
+    const StarCatalogRecord* StarCatalog::find_by_name(std::string_view name) const
+    {
+        const auto normalized = normalize_name(name);
+        if (normalized.empty())
+        {
+            return nullptr;
+        }
+
+        const auto it = index_by_name_.find(normalized);
+        if (it == index_by_name_.end())
         {
             return nullptr;
         }
@@ -127,6 +217,7 @@ namespace overlay
         catalog.records.reserve(star_count);
         catalog.name_blob_.assign(reinterpret_cast<const char*>(strings_ptr), strings_size);
         catalog.index_by_system_id_.reserve(star_count);
+        catalog.index_by_name_.reserve(star_count);
 
         for (std::uint32_t i = 0; i < star_count; ++i)
         {
@@ -149,8 +240,16 @@ namespace overlay
                 throw std::runtime_error("Star catalog name out of range");
             }
 
-            catalog.index_by_system_id_[record.system_id] = catalog.records.size();
+            const auto index = catalog.records.size();
+            catalog.index_by_system_id_[record.system_id] = index;
             catalog.records.push_back(record);
+
+            const std::string_view name_view{catalog.name_blob_.data() + record.name_offset, record.name_length};
+            const std::string normalized = normalize_name(name_view);
+            if (!normalized.empty() && catalog.index_by_name_.find(normalized) == catalog.index_by_name_.end())
+            {
+                catalog.index_by_name_.emplace(normalized, index);
+            }
         }
 
         return catalog;

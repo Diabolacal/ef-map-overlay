@@ -2,40 +2,25 @@
 
 #include <algorithm>
 #include <chrono>
-#include <cstdint>
-#include <functional>
-#include <memory>
-#include <optional>
-#include <string>
-#include <utility>
-#include <vector>
+#include <thread>
 
 #include <imgui.h>
 #include <nlohmann/json.hpp>
-#include <spdlog/sinks/msvc_sink.h>
 #include <spdlog/spdlog.h>
 
 namespace
 {
-    void ensure_logger()
-    {
-        if (!spdlog::default_logger())
-        {
-            auto sink = std::make_shared<spdlog::sinks::msvc_sink_mt>();
-            auto logger = std::make_shared<spdlog::logger>("ef-overlay-module", sink);
-            logger->set_level(spdlog::level::debug);
-            spdlog::set_default_logger(logger);
-        }
-
-        spdlog::set_pattern("[%H:%M:%S.%e] [%^%l%$] %v");
-        spdlog::flush_on(spdlog::level::info);
-    }
+    using namespace std::chrono_literals;
 
     std::uint64_t now_ms()
     {
-        const auto now = std::chrono::system_clock::now();
-        return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count());
+        return static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch())
+                .count());
     }
+
+    constexpr std::uint64_t kStateStaleThresholdMs = 5000;
 }
 
 OverlayRenderer& OverlayRenderer::instance()
@@ -48,28 +33,17 @@ void OverlayRenderer::initialize(HMODULE module)
 {
     if (initialized_.load())
     {
-        spdlog::debug("OverlayRenderer already initialized");
         return;
     }
 
-    ensure_logger();
-
-    ::OutputDebugStringA("[ef-overlay] OverlayRenderer::initialize called\n");
-
     module_ = module;
     resetState();
-
     running_.store(true);
+
     pollThread_ = std::thread(&OverlayRenderer::pollLoop, this);
-    eventWriterReady_.store(eventWriter_.ensure());
-    if (!eventWriterReady_.load())
-    {
-        spdlog::warn("Overlay event writer initialization failed; events will be suppressed");
-    }
     initialized_.store(true);
 
-    const auto thread_tag = std::hash<std::thread::id>{}(pollThread_.get_id());
-    spdlog::info("Overlay renderer initialized (module={}, poller=0x{:X})", static_cast<void*>(module_), static_cast<unsigned long long>(thread_tag));
+    spdlog::info("OverlayRenderer initialized");
 }
 
 void OverlayRenderer::shutdown()
@@ -80,136 +54,129 @@ void OverlayRenderer::shutdown()
     }
 
     running_.store(false);
-
     if (pollThread_.joinable())
     {
         pollThread_.join();
     }
 
     resetState();
-
-    initialized_.store(false);
     module_ = nullptr;
+    initialized_.store(false);
 
-    ::OutputDebugStringA("[ef-overlay] OverlayRenderer::shutdown completed\n");
-    spdlog::info("Overlay renderer shut down");
+    spdlog::info("OverlayRenderer shutdown complete");
 }
 
 void OverlayRenderer::resetState()
 {
-    std::lock_guard<std::mutex> lock(stateMutex_);
-    lastPayload_.clear();
-    currentState_.reset();
-    lastError_.clear();
-    lastUpdatedAtMs_ = 0;
-    lastVersion_ = 0;
-    lastHeartbeatMs_ = 0;
-    lastSourceOnline_ = true;
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        currentState_.reset();
+        lastPayload_.clear();
+        lastError_.clear();
+        lastUpdatedAtMs_ = 0;
+        lastVersion_ = 0;
+        lastHeartbeatMs_ = 0;
+        lastSourceOnline_ = true;
+    }
+
+    eventWriterReady_.store(false);
     autoHidden_.store(false);
     autoHideReason_.clear();
     restoreVisibleOnResume_ = false;
-    eventWriterReady_.store(false);
 }
 
 void OverlayRenderer::pollLoop()
 {
-    using namespace std::chrono_literals;
-
     spdlog::info("Overlay state polling thread started");
 
     while (running_.load())
     {
-        const auto snapshot = sharedReader_.read();
+        if (!sharedReader_.ensure())
+        {
+            std::this_thread::sleep_for(500ms);
+            continue;
+        }
+
+        if (!eventWriterReady_.load())
+        {
+            eventWriterReady_.store(eventWriter_.ensure());
+        }
+
+        auto snapshot = sharedReader_.read();
         if (snapshot)
         {
-            const auto currentTimeMs = now_ms();
-            constexpr std::uint64_t staleThresholdMs = 5000;
-            std::lock_guard<std::mutex> lock(stateMutex_);
-            if (snapshot->json_payload != lastPayload_)
+            const auto payload = snapshot->json_payload;
+            const auto version = snapshot->version;
+            const auto updatedAt = snapshot->updated_at_ms;
+
+            try
             {
-                try
+                const auto json = nlohmann::json::parse(payload, nullptr, true, true);
+                overlay::OverlayState parsedState = overlay::parse_overlay_state(json);
+
                 {
-                    const auto json = nlohmann::json::parse(snapshot->json_payload, nullptr, true, true);
-                    currentState_ = overlay::parse_overlay_state(json);
-                    lastPayload_ = snapshot->json_payload;
+                    std::lock_guard<std::mutex> lock(stateMutex_);
+                    currentState_ = parsedState;
+                    lastPayload_ = payload;
                     lastError_.clear();
-                    lastUpdatedAtMs_ = snapshot->updated_at_ms;
-                    lastVersion_ = snapshot->version;
-                    lastHeartbeatMs_ = currentState_->heartbeat_ms == 0 ? snapshot->updated_at_ms : currentState_->heartbeat_ms;
-                    lastSourceOnline_ = currentState_->source_online;
-                    auto effectiveHeartbeat = lastHeartbeatMs_;
-                    if (effectiveHeartbeat == 0)
-                    {
-                        effectiveHeartbeat = snapshot->updated_at_ms;
-                    }
-
-                    const bool offline = !lastSourceOnline_;
-                    const bool stale = effectiveHeartbeat > 0 && currentTimeMs > effectiveHeartbeat && (currentTimeMs - effectiveHeartbeat) > staleThresholdMs;
-                    const char* reason = offline ? "helper offline" : "helper heartbeat stale";
-
-                    const bool currentlyHidden = autoHidden_.load();
-                    if (offline || stale)
-                    {
-                        if (!currentlyHidden)
-                        {
-                            restoreVisibleOnResume_ = visible_.load();
-                            if (restoreVisibleOnResume_)
-                            {
-                                visible_.store(false);
-                            }
-                            autoHidden_.store(true);
-                            autoHideReason_ = reason;
-                            spdlog::info("Overlay auto-hidden: {} (offline={}, stale={}, age={}ms)", autoHideReason_, offline, stale, effectiveHeartbeat == 0 ? 0 : (currentTimeMs - effectiveHeartbeat));
-                        }
-                        else
-                        {
-                            autoHideReason_ = reason;
-                        }
-                    }
-                    else if (currentlyHidden)
-                    {
-                        autoHidden_.store(false);
-                        autoHideReason_.clear();
-                        if (restoreVisibleOnResume_)
-                        {
-                            visible_.store(true);
-                        }
-                        restoreVisibleOnResume_ = false;
-                        spdlog::info("Overlay auto-hide cleared: helper heartbeat restored");
-                    }
-                    spdlog::debug("Overlay state updated from shared memory (version={}, updated_at={})", lastVersion_, lastUpdatedAtMs_);
+                    lastUpdatedAtMs_ = updatedAt;
+                    lastVersion_ = version;
+                    lastHeartbeatMs_ = parsedState.heartbeat_ms;
+                    lastSourceOnline_ = parsedState.source_online;
                 }
-                catch (const std::exception& ex)
+
+                if (autoHidden_.load())
                 {
+                    autoHidden_.store(false);
+                    autoHideReason_.clear();
+                    if (restoreVisibleOnResume_)
+                    {
+                        visible_.store(true);
+                    }
+                    restoreVisibleOnResume_ = false;
+                }
+            }
+            catch (const std::exception& ex)
+            {
+                spdlog::error("Failed to parse overlay state from shared memory: {}", ex.what());
+
+                {
+                    std::lock_guard<std::mutex> lock(stateMutex_);
                     currentState_.reset();
+                    lastPayload_ = payload;
                     lastError_ = ex.what();
-                    lastPayload_ = snapshot->json_payload;
-                    lastUpdatedAtMs_ = snapshot->updated_at_ms;
-                    lastVersion_ = snapshot->version;
+                    lastUpdatedAtMs_ = updatedAt;
+                    lastVersion_ = version;
+                    lastHeartbeatMs_ = 0;
+                    lastSourceOnline_ = false;
+                }
+
+                const bool alreadyHidden = autoHidden_.load();
+                if (!alreadyHidden)
+                {
                     restoreVisibleOnResume_ = visible_.load();
                     if (restoreVisibleOnResume_)
                     {
                         visible_.store(false);
                     }
-                    autoHidden_.store(true);
-                    autoHideReason_ = "state parse failure";
-                    spdlog::error("Failed to parse overlay state from shared memory: {}", ex.what());
                 }
+                autoHidden_.store(true);
+                autoHideReason_ = "state parse failure";
             }
         }
 
         {
-            const auto currentTimeMs = now_ms();
+            const std::uint64_t currentTimeMs = now_ms();
             std::lock_guard<std::mutex> lock(stateMutex_);
-            const std::uint64_t heartbeatCopy = lastHeartbeatMs_ == 0 ? lastUpdatedAtMs_ : lastHeartbeatMs_;
             const bool haveState = currentState_.has_value();
+            const std::uint64_t heartbeatCopy = lastHeartbeatMs_ == 0 ? lastUpdatedAtMs_ : lastHeartbeatMs_;
+            const bool currentlyHidden = autoHidden_.load();
+
             if (haveState)
             {
-                constexpr std::uint64_t staleThresholdMs = 5000;
-                const bool stale = heartbeatCopy > 0 && currentTimeMs > heartbeatCopy && (currentTimeMs - heartbeatCopy) > staleThresholdMs;
+                const bool stale = heartbeatCopy > 0 && currentTimeMs > heartbeatCopy && (currentTimeMs - heartbeatCopy) > kStateStaleThresholdMs;
                 const bool offline = !lastSourceOnline_;
                 const char* reason = offline ? "helper offline" : "helper heartbeat stale";
-                const bool currentlyHidden = autoHidden_.load();
 
                 if (offline || stale)
                 {
@@ -222,26 +189,23 @@ void OverlayRenderer::pollLoop()
                         }
                         autoHidden_.store(true);
                         autoHideReason_ = reason;
-                        spdlog::info("Overlay auto-hidden (loop check): reason={}, age={}ms", autoHideReason_, heartbeatCopy == 0 ? 0 : (currentTimeMs - heartbeatCopy));
+                        spdlog::info("Overlay auto-hidden (loop check): reason={}, age={}ms", autoHideReason_, heartbeatCopy == 0 || currentTimeMs <= heartbeatCopy ? 0 : (currentTimeMs - heartbeatCopy));
                     }
                     else
                     {
                         autoHideReason_ = reason;
                     }
                 }
-                else if (currentlyHidden)
+                else if (currentlyHidden && autoHideReason_ != "state parse failure")
                 {
-                    if (autoHideReason_ != "state parse failure")
+                    autoHidden_.store(false);
+                    autoHideReason_.clear();
+                    if (restoreVisibleOnResume_)
                     {
-                        autoHidden_.store(false);
-                        autoHideReason_.clear();
-                        if (restoreVisibleOnResume_)
-                        {
-                            visible_.store(true);
-                        }
-                        restoreVisibleOnResume_ = false;
-                        spdlog::info("Overlay auto-hide cleared (loop check)");
+                        visible_.store(true);
                     }
+                    restoreVisibleOnResume_ = false;
+                    spdlog::info("Overlay auto-hide cleared (loop check)");
                 }
             }
         }
@@ -271,12 +235,7 @@ void OverlayRenderer::renderImGui()
         }
     }
 
-    if (!visible_.load())
-    {
-        return;
-    }
-
-    if (autoHidden_.load())
+    if (!visible_.load() || autoHidden_.load())
     {
         return;
     }
@@ -294,15 +253,68 @@ void OverlayRenderer::renderImGui()
         version = lastVersion_;
     }
 
-    const auto nowMs = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count());
+    const std::uint64_t nowMsValue = now_ms();
+
+    if (!eventWriterReady_.load())
+    {
+        eventWriterReady_.store(eventWriter_.ensure());
+    }
 
     ImGui::SetNextWindowSize(ImVec2(360.0f, 0.0f), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowBgAlpha(0.92f);
+    ImGui::SetNextWindowBgAlpha(0.94f);
 
-    ImGui::Begin("EF-Map Overlay", nullptr, ImGuiWindowFlags_NoCollapse);
+    const ImVec4 windowBg = ImVec4(0.035f, 0.035f, 0.035f, 0.96f);
+    const ImVec4 titleBg = ImVec4(0.08f, 0.08f, 0.08f, 0.94f);
+    const ImVec4 titleBgActive = titleBg;
+    const ImVec4 accentActive = ImVec4(0.96f, 0.96f, 0.96f, 0.85f);
+    const ImVec4 accentInactive = ImVec4(0.55f, 0.57f, 0.60f, 0.30f);
+    const ImVec4 resizeGripIdle = ImVec4(0.80f, 0.82f, 0.85f, 0.24f);
+    const ImVec4 resizeGripHot = ImVec4(0.98f, 0.98f, 0.98f, 0.88f);
+
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, windowBg);
+    ImGui::PushStyleColor(ImGuiCol_TitleBg, titleBg);
+    ImGui::PushStyleColor(ImGuiCol_TitleBgCollapsed, titleBg);
+    ImGui::PushStyleColor(ImGuiCol_TitleBgActive, titleBgActive);
+    ImGui::PushStyleColor(ImGuiCol_Separator, accentInactive);
+    ImGui::PushStyleColor(ImGuiCol_SeparatorHovered, accentActive);
+    ImGui::PushStyleColor(ImGuiCol_SeparatorActive, accentActive);
+    ImGui::PushStyleColor(ImGuiCol_ResizeGrip, resizeGripIdle);
+    ImGui::PushStyleColor(ImGuiCol_ResizeGripHovered, resizeGripHot);
+    ImGui::PushStyleColor(ImGuiCol_ResizeGripActive, resizeGripHot);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+
+    const ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoCollapse;
+    const bool windowOpen = ImGui::Begin("EF-Map Overlay", nullptr, windowFlags);
+    if (!windowOpen)
+    {
+        ImGui::End();
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor(10);
+        return;
+    }
+
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    const ImVec2 windowPos = ImGui::GetWindowPos();
+    const ImVec2 windowSize = ImGui::GetWindowSize();
+    const bool windowFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+
+    drawList->PushClipRectFullScreen();
+    const float accentHeight = 1.0f;
+    const float accentYOffset = -0.5f;
+    const ImVec2 accentMin(windowPos.x, windowPos.y + accentYOffset);
+    const ImVec2 accentMax(windowPos.x + windowSize.x, windowPos.y + accentYOffset + accentHeight);
+    const ImVec4 accentColor = windowFocused ? accentActive : accentInactive;
+    drawList->AddRectFilled(accentMin, accentMax, ImGui::ColorConvertFloat4ToU32(accentColor));
+    drawList->PopClipRect();
+
+    const float dotsPaddingX = 18.0f;
+    const float dotsPaddingY = 6.0f;
+    const ImVec2 dotsPos(windowPos.x + windowSize.x - dotsPaddingX, windowPos.y + dotsPaddingY);
+    const float ellipsisScale = 0.88f;
+    drawList->AddText(ImGui::GetFont(), ImGui::GetFontSize() * ellipsisScale, dotsPos, ImGui::GetColorU32(ImVec4(0.80f, 0.80f, 0.80f, 0.9f)), "...");
+
     ImGui::Text("Thread ID: %lu", ::GetCurrentThreadId());
-    ImGui::TextDisabled("Press F8 to hide this overlay");
+    ImGui::TextDisabled("F8 hides overlay • overlay map view disabled");
     ImGui::Separator();
 
     if (!stateCopy)
@@ -315,9 +327,9 @@ void OverlayRenderer::renderImGui()
     }
     else
     {
-        const auto& state = *stateCopy;
-        const double ageSeconds = updatedAtMs > 0 && nowMs > updatedAtMs
-            ? static_cast<double>(nowMs - updatedAtMs) / 1000.0
+        const overlay::OverlayState& state = *stateCopy;
+        const double ageSeconds = updatedAtMs > 0 && nowMsValue > updatedAtMs
+            ? static_cast<double>(nowMsValue - updatedAtMs) / 1000.0
             : 0.0;
 
         ImGui::Text("Schema version: %u", version);
@@ -335,10 +347,10 @@ void OverlayRenderer::renderImGui()
         ImGui::TextUnformatted("Route preview:");
 
         const std::size_t maxRows = 12;
-        const auto displayCount = std::min<std::size_t>(state.route.size(), maxRows);
+        const std::size_t displayCount = std::min<std::size_t>(state.route.size(), maxRows);
         for (std::size_t i = 0; i < displayCount; ++i)
         {
-            const auto& node = state.route[i];
+            const overlay::RouteNode& node = state.route[i];
             ImGui::BulletText("%zu. %s (%s) -- %.2f ly %s",
                 i + 1,
                 node.display_name.c_str(),
@@ -355,7 +367,7 @@ void OverlayRenderer::renderImGui()
         if (state.player_marker.has_value())
         {
             ImGui::Separator();
-            const auto& marker = *state.player_marker;
+            const overlay::PlayerMarker& marker = *state.player_marker;
             ImGui::Text("Player: %s (%s)%s",
                 marker.display_name.c_str(),
                 marker.system_id.c_str(),
@@ -367,7 +379,7 @@ void OverlayRenderer::renderImGui()
             ImGui::Separator();
             ImGui::TextUnformatted("Highlights:");
             ImGui::Indent();
-            for (const auto& highlight : state.highlighted_systems)
+            for (const overlay::HighlightedSystem& highlight : state.highlighted_systems)
             {
                 ImGui::BulletText("%s (%s) [%s]", highlight.display_name.c_str(), highlight.system_id.c_str(), highlight.category.c_str());
                 if (highlight.note.has_value())
@@ -382,7 +394,7 @@ void OverlayRenderer::renderImGui()
 
         if (state.camera_pose.has_value())
         {
-            const auto& pose = *state.camera_pose;
+            const overlay::CameraPose& pose = *state.camera_pose;
             ImGui::Separator();
             ImGui::Text("Camera position: (%.2f, %.2f, %.2f)", pose.position.x, pose.position.y, pose.position.z);
             ImGui::Text("Camera look-at: (%.2f, %.2f, %.2f)", pose.look_at.x, pose.look_at.y, pose.look_at.z);
@@ -394,7 +406,7 @@ void OverlayRenderer::renderImGui()
             ImGui::Separator();
             ImGui::TextUnformatted("HUD hints:");
             ImGui::Indent();
-            for (const auto& hint : state.hud_hints)
+            for (const overlay::HudHint& hint : state.hud_hints)
             {
                 ImGui::BulletText("%s%s", hint.text.c_str(), hint.dismissible ? " (dismissible)" : "");
                 ImGui::SameLine();
@@ -410,11 +422,6 @@ void OverlayRenderer::renderImGui()
         }
     }
 
-    if (!eventWriterReady_.load())
-    {
-        eventWriterReady_.store(eventWriter_.ensure());
-    }
-
     if (eventWriterReady_.load())
     {
         ImGui::Separator();
@@ -422,7 +429,7 @@ void OverlayRenderer::renderImGui()
         {
             overlay::OverlayEvent event;
             event.type = overlay::OverlayEventType::WaypointAdvanced;
-            event.payload = nlohmann::json{{"source", "overlay"}, {"sent_ms", nowMs}}.dump();
+            event.payload = nlohmann::json{{"source", "overlay"}, {"sent_ms", nowMsValue}}.dump();
             if (!eventWriter_.publish(event))
             {
                 spdlog::warn("Failed to publish WaypointAdvanced event");
@@ -448,6 +455,8 @@ void OverlayRenderer::renderImGui()
     }
 
     ImGui::End();
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor(10);
 }
 
 std::optional<overlay::OverlayState> OverlayRenderer::latestState(std::uint32_t& version, std::uint64_t& updatedAtMs, std::string& error) const

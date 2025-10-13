@@ -1,3 +1,65 @@
+## 2025-10-13 – Overlay styling hotfix (foreground accent rollback)
+- Goal: Revert the foreground draw-list accent experiment that froze the client on injection while keeping the white resize highlight and top accent.
+- Files: `src/overlay/overlay_renderer.cpp`.
+- Diff: ~+30/−48 (remove foreground draw calls, trim extra style pushes, restore window draw-list accent with brighter colors, add separator overrides + clip guard, align top accent thickness with hover highlight).
+- Risk: low (UI cosmetics only; regression fix).
+- Gates: build ✅ (`cmake --build build --config Debug`) | tests ✅ (`ctest -C Debug --output-on-failure`) | smoke ⏳ (pending user validation post-injection).
+- Cross-repo: None.
+- Follow-ups: Revisit top accent approach later—consider dedicated overlay layer or viewport hook rather than foreground draw list.
+
+## 2025-10-13 – Helper auto-detects EVE client process
+- Goal: Resolve the target game client automatically so helper-triggered injections no longer require a manual PID lookup.
+- Files: `src/helper/helper_runtime.cpp`.
+- Diff: ~+120/−0 (process enumeration helper, UTF-8 conversion, injection messaging tweaks).
+- Risk: low (helper-side process spawning only).
+- Gates: build ✅ (`cmake --build build --config Debug`) | tests ✅ (`ctest -C Debug`, reran flaky queue test) | smoke ⏳ (manual helper inject next session).
+- Cross-repo: None.
+- Follow-ups: Point release of helper once Release binaries regenerated; consider adding retry loop to watch for client launch.
+
+## 2025-10-13 – Overlay styling polish (accent + resize parity)
+- Goal: Force the resize edge highlight to match the in-game white glow and ensure the active window draws a visible top accent.
+- Files: `src/overlay/overlay_renderer.cpp`.
+- Diff: ~+35/−8 (additional ImGui color overrides, foreground accent draw call).
+- Risk: low (UI cosmetics only).
+- Gates: build ✅ (`cmake --build build --config Debug`) | tests ✅ (`ctest -C Debug --output-on-failure`) | smoke ⏳ (user verifying in live client after reinject).
+- Cross-repo: None.
+- Follow-ups: Confirm accent visibility across multiple resolutions and tweak inactive accent tone once HUD palette is finalized.
+
+## 2025-10-13 – Overlay window styling parity
+- Goal: Restyle the ImGui debug window so it matches EVE Frontier UI (white active accent, neutral resize hints, ellipsis menu placeholder).
+- Files: `src/overlay/overlay_renderer.cpp`.
+- Diff: ~+120/−35 (style pushes, custom accent drawing, ellipsis glyph, follow-up tuning for accent thickness/hover behavior).
+- Risk: low (UI cosmetics only).
+- Gates: build ✅ (`cmake --build build --config Debug`) | tests ✅ (`ctest -C Debug`).
+- Cross-repo: None.
+- Follow-ups: Wire ellipsis menu into upcoming context actions; revisit colors once final HUD palette is locked.
+
+## 2025-10-12 – Star catalog name fallback for map view
+- Goal: Allow map rendering when helper routes carry system names instead of numeric IDs by indexing the star catalog by normalized name and teaching the renderer to fall back accordingly.
+- Files: `src/shared/star_catalog.{hpp,cpp}`, `src/overlay/starfield_renderer.cpp`.
+- Diff: ~+150/−10 (catalog index + renderer fallback + projection helper adjustments).
+- Risk: medium (touches renderer hot path and catalog loader).
+- Gates: build ✅ (`cmake --build build --config Release`) | tests ✅ (`ctest -C Release`) | smoke ✅ (helper restarted, overlay reinjected, live client ready for user verification).
+- Cross-repo: None (catalog binary already shared with EF-Map main).
+- Follow-ups: Monitor for ambiguous name collisions; if collisions appear, extend resolver with manual overrides and surface fallback status in helper diagnostics.
+
+## 2025-10-12 – Overlay map HUD toggle
+- Goal: Introduce map view HUD with route markers/labels and keep debug panel accessible via F7.
+- Files: `src/overlay/overlay_renderer.cpp`
+- Diff: ~240 ++ / 240 --
+- Risk: medium
+- Gates: build ✅ (Release) tests ✅ (ctest Release) smoke ❌ (manual game attach deferred)
+- Cross-repo: EF-Map-main map view branch (starfield renderer helpers)
+- Follow-ups: Run in-game smoke to verify markers and labels align with starfield focus once helper is reattached.
+
+## 2025-10-12 – Map/debug window unification & catalog packaging
+- Goal: Ensure map/debug modes reuse the same ImGui window with resizing preserved and deploy `star_catalog_v1.bin` alongside the injected DLL so the starfield renderer initializes.
+- Files: `src/overlay/overlay_renderer.cpp`, runtime asset copy to `build/src/overlay/Release/`.
+- Diff: ~180 ++ / 220 --
+- Risk: low
+- Gates: build ⚪ (Release blocked by DLL in use) | build ✅ (Debug) | tests ✅ (`ctest -C Debug --output-on-failure`) | smoke ✅ (live client confirmed shared window + starfield ready after reinject)
+- Cross-repo: Asset mirrors `EF-Map-main/data/star_catalog_v1.bin`; no code changes required in main repo.
+- Follow-ups: Re-run Release build once DLL is unloaded, then ship new binary bundle; automate asset copy in build script so future releases include the catalog.
 <!-- Overlay decision log created 2025-09-26. Mirror significant cross-repo events with `EF-Map-main/docs/decision-log.md` (sibling repository) and include a `Cross-repo` note per entry when applicable. -->
 
 ## 2025-10-12 – Release smoke test (helper + injector)
@@ -26,6 +88,15 @@
 - Gates: build ✅ (`cmake --build build --config Debug`) | tests ✅ (`build/tests/Debug/ef_overlay_tests.exe`).
 - Cross-repo: Documented in `EF-Map-main/docs/decision-log.md` (2025-10-12 – Overlay camera-aligned renderer sync).
 - Follow-ups: Add waypoint markers/selection glow, profile GPU/frame impact in live sessions, and expose renderer health metrics in helper tray diagnostics.
+
+## 2025-10-13 – Overlay roadmap refocus (helper-first)
+- Goal: Pause native starfield visualization work and prioritize helper-driven features (log watcher, mining/DPS tracking, in-overlay actions) that deliver immediate value.
+- Files: docs only (`docs/decision-log.md`, `docs/initiatives/GAME_OVERLAY_PLAN.md`).
+- Diff: n/a (doc updates).
+- Risk: low (strategic reprioritization).
+- Gates: build ⚪ | tests ⚪ | smoke ⚪ (no code path changes).
+- Cross-repo: Mirrored in `EF-Map-main/docs/decision-log.md` with same title/date.
+- Follow-ups: Execute helper-first roadmap—ship log watcher + position sync, tray UX shell, session tracking modules, and browser CTA/event bridge before revisiting starfield polish.
 
 ## 2025-10-02 – Native starfield renderer spike (DX12 point cloud)
 - Goal: Render the EF-Map star catalog inside the overlay using a lightweight DX12 pipeline (point sprites + additive blend) as the baseline for native visuals.

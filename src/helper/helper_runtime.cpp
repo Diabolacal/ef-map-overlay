@@ -1,17 +1,100 @@
 #include "helper_runtime.hpp"
 
 #include <windows.h>
+#include <tlhelp32.h>
+
+#include <cwctype>
 
 #include <spdlog/spdlog.h>
 
 #include <chrono>
 #include <filesystem>
+#include <string>
 #include <utility>
 #include <sstream>
 #include <system_error>
 
 namespace
 {
+    std::wstring to_lower_copy(std::wstring value)
+    {
+        for (auto& ch : value)
+        {
+            ch = static_cast<wchar_t>(::towlower(ch));
+        }
+        return value;
+    }
+
+    std::string narrow_utf8(const std::wstring& value)
+    {
+        if (value.empty())
+        {
+            return {};
+        }
+
+        int required = ::WideCharToMultiByte(CP_UTF8, 0, value.c_str(), -1, nullptr, 0, nullptr, nullptr);
+        if (required <= 0)
+        {
+            return {};
+        }
+
+        std::string result(static_cast<std::size_t>(required) - 1, '\0');
+        if (::WideCharToMultiByte(CP_UTF8, 0, value.c_str(), -1, result.data(), required, nullptr, nullptr) <= 0)
+        {
+            return {};
+        }
+
+        return result;
+    }
+
+    struct ProcessLookup
+    {
+        std::optional<DWORD> pid;
+        std::size_t matches{0};
+        DWORD lastError{0};
+    };
+
+    ProcessLookup find_process_by_name(const std::wstring& name)
+    {
+        ProcessLookup result;
+
+        const std::wstring needle = to_lower_copy(name);
+
+        HANDLE snapshot = ::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (snapshot == INVALID_HANDLE_VALUE)
+        {
+            result.lastError = ::GetLastError();
+            return result;
+        }
+
+        PROCESSENTRY32W entry{};
+        entry.dwSize = sizeof(PROCESSENTRY32W);
+
+        if (!::Process32FirstW(snapshot, &entry))
+        {
+            result.lastError = ::GetLastError();
+            ::CloseHandle(snapshot);
+            return result;
+        }
+
+        do
+        {
+            const std::wstring processName = to_lower_copy(entry.szExeFile);
+            if (processName == needle)
+            {
+                ++result.matches;
+                result.pid = entry.th32ProcessID;
+                if (result.matches > 1)
+                {
+                    break;
+                }
+            }
+        } while (::Process32NextW(snapshot, &entry));
+
+        ::CloseHandle(snapshot);
+        return result;
+    }
+
     std::filesystem::path canonical_parent(const std::filesystem::path& path)
     {
         std::error_code ec;
@@ -266,7 +349,34 @@ bool HelperRuntime::injectOverlay(const std::wstring& processName)
         return false;
     }
 
-    std::wstring commandLine = L"\"" + injectorPath.wstring() + L"\" " + processName + L" \"" + dllPath.wstring() + L"\"";
+    ProcessLookup lookup = find_process_by_name(processName);
+    if (lookup.matches == 0 || !lookup.pid.has_value())
+    {
+        std::ostringstream oss;
+        if (lookup.lastError != 0)
+        {
+            oss << "Failed to enumerate processes (error " << lookup.lastError << ")";
+        }
+        else
+        {
+            oss << "Process '" << narrow_utf8(processName) << "' not found";
+        }
+        setInjectionMessage(oss.str(), false);
+        return false;
+    }
+
+    if (lookup.matches > 1)
+    {
+        std::ostringstream oss;
+    oss << "Multiple '" << narrow_utf8(processName) << "' processes found ("
+            << lookup.matches << "); aborting injection";
+        setInjectionMessage(oss.str(), false);
+        return false;
+    }
+
+    const std::wstring pidArgument = std::to_wstring(*lookup.pid);
+
+    std::wstring commandLine = L"\"" + injectorPath.wstring() + L"\" " + pidArgument + L" \"" + dllPath.wstring() + L"\"";
 
     STARTUPINFOW si{};
     si.cb = sizeof(si);
@@ -301,7 +411,11 @@ bool HelperRuntime::injectOverlay(const std::wstring& processName)
         return false;
     }
 
-    setInjectionMessage("Overlay injector completed successfully", true);
+    {
+        std::ostringstream oss;
+        oss << "Overlay injector completed successfully (PID=" << *lookup.pid << ")";
+        setInjectionMessage(oss.str(), true);
+    }
     return true;
 }
 

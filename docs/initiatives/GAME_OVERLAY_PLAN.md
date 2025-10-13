@@ -43,21 +43,22 @@
 - **Custom protocol** `ef-overlay://attach?session=<token>` for explicit actions from the browser.
 - **Local HTTP API** `http://127.0.0.1:<port>/status`, `/attach`, `/dismiss` for health checks and richer commands.
 
-## 6. Progress Summary (2025-10-12)
+## 6. Progress Summary (2025-10-13)
 - ✅ **Helper + injector MVP** – C++ helper boots, exposes HTTP API, launches overlay smoke script, injects DX12 module with hotkey toggle.
 - ✅ **DX12 overlay hook** – Swap-chain hook renders ImGui window, handles input capture (F8 toggle, drag/move, edge resize) without impacting gameplay.
 - ✅ **Automation** – PowerShell smoke script coordinates helper launch, payload post, and DLL injection for quick manual validation.
-- ✅ **Overlay state v2 schema + event queue** – Shared-memory schema updated with player marker, highlights, camera pose, HUD hints, follow flag; overlay <-> helper event ring buffer published via shared memory + HTTP drain endpoint for testing.
-- ✅ **Camera-aligned starfield + route polyline** – DX12 renderer consumes helper camera pose, updates per-frame constants, and draws live route polylines from catalog lookups (GPU cost remains within budget).
+- ✅ **Overlay state v2 schema + event queue** – Shared-memory schema updated with player marker, highlights, camera pose, HUD hints, follow flag; overlay ↔ helper event ring buffer published via shared memory + HTTP drain endpoint for testing.
+- ✅ **Log watcher groundwork** – Catalog resolver and shared schema fields are ready for live telemetry (system name → canonical ID); integration work now leads roadmap.
+- ⏸️ **Native starfield renderer polish** – Camera-aligned renderer exists but visual tuning is paused after artifact investigation; resume once helper-first backlog lands.
 - ▢ **Installer & signing** – Deferred until we stabilize feature set; helper currently launched manually.
 - ▢ **Browser CTA** – Web → helper bridge still manual; custom protocol & detection flow to be designed.
 
-## 7. Phase 2 – Native Content Integration (Next milestones)
-Focus: transform the overlay from a text HUD into a native starfield view synchronized with the EF-Map web app, while laying groundwork for bidirectional controls.
+## 7. Phase 2 – Helper-first execution (Active)
+Focus: deliver helper-driven wins (tray shell, log watcher, telemetry, browser bridge) before revisiting native visual polish. The starfield renderer remains in place but is paused until these user-facing capabilities ship.
 
-> **Guiding principle:** the overlay should complement, not clone, the browser app. Prioritize context-aware cues (live system updates, safety alerts, quick actions) that keep pilots in-game without alt-tabbing. Multi-monitor users already have full EF-Map; our differentiator is immediacy and automation tied to game state.
+> **Guiding principle:** keep pilots informed without alt-tabbing. Invest in automation, telemetry, and control surfaces that the helper can deliver immediately, while preserving the renderer as a follow-up polish item.
 
-### 7.0 Helper runtime UX shell *(new priority)*
+### 7.0 Helper runtime UX shell *(in-flight)*
 Deliver a lightweight tray experience around the existing helper runtime so operators can launch, monitor, and control the overlay without touching console windows.
 
 1. **Runtime extraction** – Factor current helper process control into a reusable `HelperRuntime` that can be driven by both console and tray entry points.
@@ -67,42 +68,33 @@ Deliver a lightweight tray experience around the existing helper runtime so oper
 
 > Packaging/signing remain deferred; this milestone ships a developer-quality shell only, ensuring future features (log watcher, event bridge) have a visible home.
 
-### 7.1 Data & messaging contracts
-1. **Overlay state v2 spec** *(EF-Map-main & helper)*
-   - ✅ Schema expanded with camera pose, player marker, highlights, HUD hints, follow flag, and active node tracking.
-   - ✅ Shared-memory payload version bumped to v2 with parser/serializer coverage.
-2. **Overlay ↔ helper events** *(helper & overlay)*
-   - ✅ Shared-memory ring buffer publishes overlay-generated events; helper polls and exposes `/overlay/events` for downstream consumers.
-   - ⏳ Wire helper-to-browser forwarding (HTTP/WebSocket) and auth story for event delivery into EF-Map web app.
+### 7.1 Game log watcher & location telemetry
+1. **Log watcher ingestion**
+   - Hook gamelog rotation, parse system-change lines, and reuse the existing resolver to publish canonical system IDs.
+   - Emit helper heartbeat fields (e.g., last seen system, time since update) for overlay and browser consumption.
+2. **Overlay/state wiring**
+   - Pipe location updates into shared memory, expose opt-in controls via tray toggle, and relay events to the web client.
+3. **Resilience pass**
+   - Guard against missing logs, chat spam, multi-client conflicts; document failure modes in helper diagnostics.
 
-### 7.2 Rendering pipeline
-3. **Star catalog asset** *(EF-Map-main tooling + helper)* – ✅ exporter + helper loader (2025-10-02)
-   - Export compact binary (positions, system_id, name hashes) from existing map data.
-   - Helper packages asset and provides checksum/version handshake to overlay.
-   - ✅ `tools/export_star_catalog.py` + helper metadata endpoint surface catalog status for overlay consumption.
-4. **Native starfield renderer** *(overlay DLL)*
-   - ✅ Upload static buffers (stars as instanced point sprites) and draw polyline routes with lightweight shaders.
-   - ✅ Camera-aligned view + live route polyline (2025-10-12); next up: waypoint markers and performance telemetry.
-   - Match EF-Map aesthetics (brightness falloff, selection glow) and ensure <1 ms GPU cost per frame.
-5. **HUD controls** *(overlay DLL & helper)*
-   - Build ImGui panel with buttons/toggles for follow-mode, overlay opacity, route step actions.
-   - Confirm focus handling (keyboard navigation, text input) and end-to-end event delivery back to the web app.
-
-### 7.3 Live data inputs & telemetry
-6. **Game log watcher** *(helper)*
-   - Monitor the Frontier gamelog directory (handle rotation), parse system-change lines, and resolve system names to canonical EF identifiers.
-   - Publish player location into the overlay state (opt-in toggle), flush updates through the shared memory channel, and fan out to the EF-Map web client via the event bridge.
-   - Harden against noise (chat/combat spam), missing logs, and concurrent clients; document fallback behaviour when logging is disabled.
-7. **Combat telemetry overlay** *(helper & overlay)*
+### 7.2 Combat & activity telemetry
+1. **Combat telemetry overlay** *(helper & overlay)*
    - Tail combat logs to aggregate inbound/outbound DPS in rolling windows and surface quick-glance charts inside the overlay.
    - Provide ImGui-based gauges/graphs, reset heuristics (dock, jump), and privacy controls for pilots who opt out.
-   - Reuse the watcher infrastructure for alerting hooks (e.g., spike detection) without blocking the main render thread.
-8. **Browser integration** *(EF-Map-main)*
-   - Detect helper availability, expose “Open in overlay” CTA, push state updates via HTTP/WebSocket.
-   - Handle overlay events (e.g., mark waypoint done) and refresh UI accordingly.
+2. **Session tracking modules**
+   - Capture session duration, death/jump milestones, and mining yield hooks for future analytics; publish to overlay + browser bridge.
 
-### 7.4 Packaging & UX (deferred until feature complete)
-9. **Installer & production tray polish** *(helper)*
+### 7.3 Browser integration & event bridge
+1. **Helper discovery** – Detect helper availability from the web app, expose “Open in overlay” CTA, and design fallback copy when helper is offline.
+2. **Event loop** – Forward overlay events (waypoint complete, opacity toggle) through the helper to the browser via authenticated HTTP/WebSocket channel.
+3. **CTA polish** – Provide in-app prompts linking to helper download/install once packaging is ready; for now keep scoped to developer flows.
+
+### 7.4 Native renderer polish *(paused until helper-first goals complete)*
+1. **Artifact fix & tuning** – Revisit the diagonal starfield issue once telemetry milestones ship; add waypoint markers, selection glow, and performance instrumentation as follow-up work.
+2. **HUD controls** – Resume ImGui control surface for follow-mode, opacity, and route actions after renderer visuals are stable.
+
+### 7.5 Packaging & UX (later)
+1. **Installer & production tray polish** *(helper)*
    - Convert the developer tray shell into a signed distribution (MSI/MSIX) once core features stabilize.
    - Layer in auto-update, first-run guidance, and per-display profiles for end users.
    - Fold settings panes (hotkeys, log watcher toggles) into the tray UI once the underlying capabilities are complete.

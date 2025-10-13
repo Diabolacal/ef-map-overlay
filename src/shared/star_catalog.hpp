@@ -38,6 +38,7 @@ namespace overlay
         [[nodiscard]] bool empty() const noexcept { return records.empty(); }
 
         [[nodiscard]] const StarCatalogRecord* find_by_system_id(std::uint32_t system_id) const;
+        [[nodiscard]] const StarCatalogRecord* find_by_name(std::string_view name) const;
         [[nodiscard]] std::string_view name_for(const StarCatalogRecord& record) const;
 
     private:
@@ -46,6 +47,7 @@ namespace overlay
 
         std::string name_blob_;
         std::unordered_map<std::uint32_t, std::size_t> index_by_system_id_;
+        std::unordered_map<std::string, std::size_t> index_by_name_;
     };
 
     [[nodiscard]] StarCatalog load_star_catalog(std::span<const std::uint8_t> data);
