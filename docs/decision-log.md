@@ -1,3 +1,12 @@
+## 2025-10-14 – Packaging roadmap staged for later
+- Goal: Document the future installer/tray/protocol workflow inside the shared overlay plan so packaging work is ready once the helper features stabilize.
+- Files: `docs/initiatives/GAME_OVERLAY_PLAN.md`, `docs/decision-log.md` (mirrors `EF-Map-main`).
+- Diff: +76 / -0 (Phase 6 expanded with installer tech selection, signing, tray conversion, protocol handler, and update manifest steps).
+- Risk: low (documentation only).
+- Gates: build n/a | tests n/a | smoke n/a.
+- Cross-repo: Same update applied to `EF-Map-main/docs/initiatives/GAME_OVERLAY_PLAN.md` with matching decision log entry.
+- Follow-ups: Revisit once telemetry/follow mode milestones land to choose installer tech, purchase signing cert, and schedule implementation tasks.
+
 ## 2025-10-13 – Overlay HUD telemetry readout
 - Goal: Surface helper-computed combat DPS and mining yield metrics directly in the overlay window so we can observe log-driven telemetry in real time.
 - Files: `src/overlay/overlay_renderer.cpp`.

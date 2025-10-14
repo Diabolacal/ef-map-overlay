@@ -93,8 +93,21 @@ The helper, overlay, and EF map web panel will continue to evolve together. All 
 ### Phase 6 – Packaging & pre-release readiness
 - Harden the helper tray experience, bundle with an installer, and update download CTA/links inside the EF helper panel.
 - Document installation and smoke steps in both repos; sign binaries when feature set stabilizes.
+- Stand up a signed installer workflow:
+	- Choose installer tech (WiX MSI vs MSIX vs Squirrel) and wire into overlay CI.
+	- Acquire and store Authenticode cert securely; sign helper binaries + installer artifacts.
+	- Host versioned installers on Cloudflare (R2 + Pages Worker) with HTTPS download links surfaced in the helper panel.
+- Convert the helper into a tray-first runtime:
+	- Wrap injector/overlay control inside a GUI-subsystem process so no console window appears.
+	- Register startup (Run key or Startup folder) and tray icon actions (launch overlay, view logs, quit) during install.
+- Bridge browser actions to the installed helper:
+	- Register a custom protocol (`ef-helper://`) for first-run launch from the web app.
+	- Keep/extend the localhost API so the web panel can detect running helpers and trigger overlay attach when available.
+- Plan for updates:
+	- Publish a JSON manifest describing the latest installer; helper tray checks and prompts when a new build is available.
+	- Evaluate automatic differential updates once the installer tech is chosen.
 
-**Validation:** installer builds and installs cleanly; first-run walkthrough launches helper and validates overlay attachment; decision logs capture release readiness.
+**Validation:** installer builds and installs cleanly; first-run walkthrough launches helper and validates overlay attachment; custom protocol opens the tray host from the web panel; decision logs capture release readiness.
 
 ## 8. Tooling & Tech Stack
 - Language: C++20 for DLL & helper core (optionally C# for helper UI via WinUI 3).
