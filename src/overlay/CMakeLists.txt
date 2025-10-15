@@ -30,6 +30,7 @@ target_link_libraries(${target_name}
     imgui
     spdlog::spdlog
     ef_overlay_shared
+    cpp-httplib::cpp-httplib
 )
 
 set_target_properties(${target_name}

@@ -2,16 +2,35 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <mutex>
 #include <thread>
 #include <vector>
 
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 
 namespace
 {
     using namespace std::chrono_literals;
+
+    struct TelemetryResetFeedback
+    {
+        std::mutex mutex;
+        bool inFlight{false};
+        bool lastSuccess{false};
+        std::uint64_t lastAttemptMs{0};
+        std::uint64_t lastSuccessMs{0};
+        std::string message;
+    };
+
+    TelemetryResetFeedback& telemetry_reset_feedback()
+    {
+        static TelemetryResetFeedback feedback;
+        return feedback;
+    }
 
     std::uint64_t now_ms()
     {
@@ -22,6 +41,21 @@ namespace
     }
 
     constexpr std::uint64_t kStateStaleThresholdMs = 5000;
+    constexpr std::uint64_t kMiningRateHistoryWindowMs = 120000;
+    constexpr std::uint64_t kMiningRateSmoothingWindowMs = 10000;
+
+    const ImVec4 kWindowBgFocused = ImVec4(0.035f, 0.035f, 0.035f, 0.72f);
+    const ImVec4 kWindowBgUnfocused = ImVec4(0.022f, 0.022f, 0.022f, 0.36f);
+    const ImVec4 kTitleBgColor = ImVec4(0.080f, 0.080f, 0.080f, 0.92f);
+    const ImVec4 kTabBase = ImVec4(0.520f, 0.200f, 0.030f, 0.62f);
+    const ImVec4 kTabHover = ImVec4(1.000f, 0.460f, 0.020f, 0.95f);
+    const ImVec4 kTabActive = ImVec4(1.000f, 0.420f, 0.000f, 0.99f);
+    const ImVec4 kTabInactive = ImVec4(0.340f, 0.140f, 0.040f, 0.34f);
+    const ImVec4 kButtonBase = ImVec4(0.820f, 0.350f, 0.020f, 0.80f);
+    const ImVec4 kButtonHover = ImVec4(1.000f, 0.460f, 0.020f, 0.95f);
+    const ImVec4 kButtonActive = ImVec4(0.820f, 0.320f, 0.015f, 0.99f);
+    const ImVec4 kMiningGraphBackgroundBase = ImVec4(0.320f, 0.120f, 0.020f, 1.0f);
+    const ImVec4 kMiningGraphLine = ImVec4(1.000f, 0.420f, 0.000f, 1.0f);
 }
 
 OverlayRenderer& OverlayRenderer::instance()
@@ -84,6 +118,152 @@ void OverlayRenderer::resetState()
     autoHidden_.store(false);
     autoHideReason_.clear();
     restoreVisibleOnResume_ = false;
+    currentTabIndex_ = 0;
+    tabsInitialized_ = false;
+    miningRateHistory_.clear();
+    miningRateValues_.clear();
+}
+
+void OverlayRenderer::recordMiningRateLocked(const overlay::OverlayState& state, std::uint64_t updatedAtMs)
+{
+    if (!state.telemetry.has_value() || !state.telemetry->mining.has_value())
+    {
+        return;
+    }
+
+    const overlay::MiningTelemetry& mining = *state.telemetry->mining;
+
+    std::uint64_t timestamp = updatedAtMs != 0 ? updatedAtMs : state.generated_at_ms;
+    if (timestamp == 0)
+    {
+        timestamp = now_ms();
+    }
+
+    bool replacedLast = false;
+    if (!miningRateHistory_.empty() && miningRateHistory_.back().timestampMs == timestamp)
+    {
+        miningRateHistory_.back().totalVolumeM3 = mining.total_volume_m3;
+        replacedLast = true;
+    }
+    else
+    {
+        miningRateHistory_.push_back({timestamp, mining.total_volume_m3});
+    }
+
+    const std::uint64_t cutoff = timestamp > kMiningRateHistoryWindowMs ? timestamp - kMiningRateHistoryWindowMs : 0;
+    while (!miningRateHistory_.empty() && miningRateHistory_.front().timestampMs < cutoff)
+    {
+        miningRateHistory_.pop_front();
+    }
+
+    while (!miningRateValues_.empty() && miningRateValues_.front().timestampMs < cutoff)
+    {
+        miningRateValues_.pop_front();
+    }
+
+    float computedRate = 0.0f;
+
+    if (miningRateHistory_.size() >= 2)
+    {
+        auto interpolateVolumeAt = [&](std::uint64_t targetMs) -> double {
+            if (targetMs <= miningRateHistory_.front().timestampMs)
+            {
+                return miningRateHistory_.front().totalVolumeM3;
+            }
+            if (targetMs >= miningRateHistory_.back().timestampMs)
+            {
+                return miningRateHistory_.back().totalVolumeM3;
+            }
+
+            auto it = std::lower_bound(miningRateHistory_.begin(), miningRateHistory_.end(), targetMs,
+                [](const MiningRateSample& sample, std::uint64_t value) {
+                    return sample.timestampMs < value;
+                });
+
+            if (it == miningRateHistory_.begin())
+            {
+                return it->totalVolumeM3;
+            }
+
+            const MiningRateSample& right = *it;
+            const MiningRateSample& left = *(it - 1);
+            const std::uint64_t spanMs = right.timestampMs - left.timestampMs;
+            if (spanMs == 0)
+            {
+                return right.totalVolumeM3;
+            }
+
+            const double fraction = static_cast<double>(targetMs - left.timestampMs) / static_cast<double>(spanMs);
+            return static_cast<double>(left.totalVolumeM3) + fraction * static_cast<double>(right.totalVolumeM3 - left.totalVolumeM3);
+        };
+
+        const std::uint64_t anchorTimestamp = miningRateHistory_.back().timestampMs;
+        const std::uint64_t earliestTimestamp = miningRateHistory_.front().timestampMs;
+        const double currentVolume = interpolateVolumeAt(anchorTimestamp);
+
+        std::uint64_t baselineTimestamp = anchorTimestamp > kMiningRateSmoothingWindowMs
+            ? anchorTimestamp - kMiningRateSmoothingWindowMs
+            : earliestTimestamp;
+        if (baselineTimestamp < earliestTimestamp)
+        {
+            baselineTimestamp = earliestTimestamp;
+        }
+
+        const double baselineVolume = interpolateVolumeAt(baselineTimestamp);
+        const std::uint64_t elapsedMs = anchorTimestamp > baselineTimestamp ? anchorTimestamp - baselineTimestamp : 0;
+
+        if (elapsedMs > 0)
+        {
+            const double deltaVolume = currentVolume - baselineVolume;
+            if (deltaVolume > 0.0)
+            {
+                computedRate = static_cast<float>((deltaVolume * 60000.0) / static_cast<double>(elapsedMs));
+            }
+        }
+    }
+
+    if (replacedLast && !miningRateValues_.empty() && miningRateValues_.back().timestampMs == timestamp)
+    {
+        miningRateValues_.back().rate = computedRate;
+    }
+    else
+    {
+        miningRateValues_.push_back({timestamp, computedRate});
+    }
+}
+
+OverlayRenderer::TelemetryResetResult OverlayRenderer::performTelemetryReset()
+{
+    TelemetryResetResult result;
+    result.resetMs = now_ms();
+
+    if (!eventWriterReady_.load())
+    {
+        eventWriterReady_.store(eventWriter_.ensure());
+    }
+
+    if (!eventWriterReady_.load())
+    {
+        result.success = false;
+        result.message = "Event queue unavailable";
+        return result;
+    }
+
+    overlay::OverlayEvent event;
+    event.type = overlay::OverlayEventType::CustomJson;
+    event.timestamp_ms = result.resetMs;
+    event.payload = nlohmann::json{{"action", "telemetry_reset"}}.dump();
+
+    if (!eventWriter_.publish(event))
+    {
+        result.success = false;
+        result.message = "Failed to publish reset event";
+        return result;
+    }
+
+    result.success = true;
+    result.message = "Reset requested";
+    return result;
 }
 
 void OverlayRenderer::pollLoop()
@@ -124,6 +304,7 @@ void OverlayRenderer::pollLoop()
                     lastVersion_ = version;
                     lastHeartbeatMs_ = parsedState.heartbeat_ms;
                     lastSourceOnline_ = parsedState.source_online;
+                    recordMiningRateLocked(parsedState, updatedAt);
                 }
 
                 if (autoHidden_.load())
@@ -244,14 +425,16 @@ void OverlayRenderer::renderImGui()
     std::optional<overlay::OverlayState> stateCopy;
     std::string errorCopy;
     std::uint64_t updatedAtMs = 0;
-    std::uint32_t version = 0;
+    std::deque<MiningRateSample> miningRateHistoryCopy;
+    std::deque<MiningRateValue> miningRateValuesCopy;
 
     {
         std::lock_guard<std::mutex> lock(stateMutex_);
         stateCopy = currentState_;
         errorCopy = lastError_;
         updatedAtMs = lastUpdatedAtMs_;
-        version = lastVersion_;
+        miningRateHistoryCopy = miningRateHistory_;
+        miningRateValuesCopy = miningRateValues_;
     }
 
     const std::uint64_t nowMsValue = now_ms();
@@ -262,20 +445,16 @@ void OverlayRenderer::renderImGui()
     }
 
     ImGui::SetNextWindowSize(ImVec2(360.0f, 0.0f), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowBgAlpha(0.94f);
 
-    const ImVec4 windowBg = ImVec4(0.035f, 0.035f, 0.035f, 0.96f);
-    const ImVec4 titleBg = ImVec4(0.08f, 0.08f, 0.08f, 0.94f);
-    const ImVec4 titleBgActive = titleBg;
-    const ImVec4 accentActive = ImVec4(0.96f, 0.96f, 0.96f, 0.85f);
-    const ImVec4 accentInactive = ImVec4(0.55f, 0.57f, 0.60f, 0.30f);
-    const ImVec4 resizeGripIdle = ImVec4(0.80f, 0.82f, 0.85f, 0.24f);
-    const ImVec4 resizeGripHot = ImVec4(0.98f, 0.98f, 0.98f, 0.88f);
+    const ImVec4 accentActive = ImVec4(0.94f, 0.95f, 0.96f, 0.96f);
+    const ImVec4 accentInactive = ImVec4(0.65f, 0.68f, 0.70f, 0.40f);
+    const ImVec4 resizeGripIdle = ImVec4(0.88f, 0.90f, 0.92f, 0.36f);
+    const ImVec4 resizeGripHot = ImVec4(0.95f, 0.96f, 0.98f, 0.92f);
 
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, windowBg);
-    ImGui::PushStyleColor(ImGuiCol_TitleBg, titleBg);
-    ImGui::PushStyleColor(ImGuiCol_TitleBgCollapsed, titleBg);
-    ImGui::PushStyleColor(ImGuiCol_TitleBgActive, titleBgActive);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+    ImGui::PushStyleColor(ImGuiCol_TitleBg, kTitleBgColor);
+    ImGui::PushStyleColor(ImGuiCol_TitleBgCollapsed, kTitleBgColor);
+    ImGui::PushStyleColor(ImGuiCol_TitleBgActive, kTitleBgColor);
     ImGui::PushStyleColor(ImGuiCol_Separator, accentInactive);
     ImGui::PushStyleColor(ImGuiCol_SeparatorHovered, accentActive);
     ImGui::PushStyleColor(ImGuiCol_SeparatorActive, accentActive);
@@ -299,6 +478,10 @@ void OverlayRenderer::renderImGui()
     const ImVec2 windowSize = ImGui::GetWindowSize();
     const bool windowFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
 
+    const ImVec2 windowMax(windowPos.x + windowSize.x, windowPos.y + windowSize.y);
+    const ImVec4 windowBgColor = windowFocused ? kWindowBgFocused : kWindowBgUnfocused;
+    drawList->AddRectFilled(windowPos, windowMax, ImGui::ColorConvertFloat4ToU32(windowBgColor), 6.0f);
+
     drawList->PushClipRectFullScreen();
     const float accentHeight = 1.0f;
     const float accentYOffset = -0.5f;
@@ -312,11 +495,6 @@ void OverlayRenderer::renderImGui()
     const float dotsPaddingY = 6.0f;
     const ImVec2 dotsPos(windowPos.x + windowSize.x - dotsPaddingX, windowPos.y + dotsPaddingY);
     const float ellipsisScale = 0.88f;
-    drawList->AddText(ImGui::GetFont(), ImGui::GetFontSize() * ellipsisScale, dotsPos, ImGui::GetColorU32(ImVec4(0.80f, 0.80f, 0.80f, 0.9f)), "...");
-
-    ImGui::Text("Thread ID: %lu", ::GetCurrentThreadId());
-    ImGui::TextDisabled("F8 hides overlay • overlay map view disabled");
-    ImGui::Separator();
 
     if (!stateCopy)
     {
@@ -329,308 +507,662 @@ void OverlayRenderer::renderImGui()
     else
     {
         const overlay::OverlayState& state = *stateCopy;
-        const double ageSeconds = updatedAtMs > 0 && nowMsValue > updatedAtMs
-            ? static_cast<double>(nowMsValue - updatedAtMs) / 1000.0
-            : 0.0;
 
-        ImGui::Text("Schema version: %u", version);
-        ImGui::Text("Route nodes: %zu", state.route.size());
-        ImGui::Text("Generated: %.1f seconds ago", ageSeconds);
-        ImGui::Text("Follow mode: %s", state.follow_mode_enabled ? "enabled" : "disabled");
+        const overlay::TelemetryMetrics* telemetry = state.telemetry ? &*state.telemetry : nullptr;
 
-        if (state.notes.has_value())
-        {
+        auto renderOverviewTab = [&]() {
             ImGui::Separator();
-            ImGui::TextWrapped("Notes: %s", state.notes->c_str());
-        }
+            ImGui::Text("Follow mode: %s", state.follow_mode_enabled ? "enabled" : "disabled");
 
-        ImGui::Separator();
-        ImGui::TextUnformatted("Route preview:");
-
-        const std::size_t maxRows = 12;
-        const std::size_t displayCount = std::min<std::size_t>(state.route.size(), maxRows);
-        for (std::size_t i = 0; i < displayCount; ++i)
-        {
-            const overlay::RouteNode& node = state.route[i];
-            ImGui::BulletText("%zu. %s (%s) -- %.2f ly %s",
-                i + 1,
-                node.display_name.c_str(),
-                node.system_id.c_str(),
-                node.distance_ly,
-                node.via_gate ? "via gate" : "jump");
-        }
-
-        if (state.route.size() > maxRows)
-        {
-            ImGui::Text("...and %zu more nodes", state.route.size() - maxRows);
-        }
-
-        if (state.telemetry.has_value())
-        {
-            const overlay::TelemetryMetrics& telemetry = *state.telemetry;
-            if (telemetry.combat.has_value() || telemetry.mining.has_value())
+            if (state.notes.has_value())
             {
                 ImGui::Separator();
-                ImGui::TextUnformatted("Telemetry");
+                ImGui::TextWrapped("Notes: %s", state.notes->c_str());
+            }
+
+            ImGui::Separator();
+            ImGui::TextUnformatted("Route preview:");
+            const std::size_t maxRows = 12;
+            if (state.route.empty())
+            {
+                ImGui::TextDisabled("No route nodes loaded");
+            }
+            else
+            {
+                const std::size_t displayCount = std::min<std::size_t>(state.route.size(), maxRows);
+                for (std::size_t i = 0; i < displayCount; ++i)
+                {
+                    const overlay::RouteNode& node = state.route[i];
+                    ImGui::BulletText("%zu. %s (%s) -- %.2f ly %s",
+                        i + 1,
+                        node.display_name.c_str(),
+                        node.system_id.c_str(),
+                        node.distance_ly,
+                        node.via_gate ? "via gate" : "jump");
+                }
+
+                if (state.route.size() > maxRows)
+                {
+                    ImGui::Text("...and %zu more nodes", state.route.size() - maxRows);
+                }
+            }
+
+            if (state.active_route_node_id.has_value())
+            {
+                ImGui::Separator();
+                ImGui::Text("Active route node: %s", state.active_route_node_id->c_str());
+            }
+
+            if (eventWriterReady_.load())
+            {
+                ImGui::Separator();
+                ImGui::PushStyleColor(ImGuiCol_Button, kButtonBase);
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kButtonHover);
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, kButtonActive);
+
+                if (ImGui::Button("Send waypoint advance event"))
+                {
+                    overlay::OverlayEvent event;
+                    event.type = overlay::OverlayEventType::WaypointAdvanced;
+                    event.payload = nlohmann::json{{"source", "overlay"}, {"sent_ms", nowMsValue}}.dump();
+                    if (!eventWriter_.publish(event))
+                    {
+                        spdlog::warn("Failed to publish WaypointAdvanced event");
+                    }
+                }
+
+                ImGui::SameLine();
+                if (ImGui::Button("Request follow toggle"))
+                {
+                    overlay::OverlayEvent event;
+                    event.type = overlay::OverlayEventType::FollowModeToggled;
+                    event.payload = nlohmann::json{{"requested", true}}.dump();
+                    if (!eventWriter_.publish(event))
+                    {
+                        spdlog::warn("Failed to publish FollowModeToggled event");
+                    }
+                }
+
+                ImGui::PopStyleColor(3);
+            }
+            else
+            {
+                ImGui::Separator();
+                ImGui::TextColored(ImVec4(0.9f, 0.2f, 0.2f, 1.0f), "Event queue unavailable.");
+            }
+
+            if (state.player_marker.has_value())
+            {
+                ImGui::Separator();
+                const overlay::PlayerMarker& marker = *state.player_marker;
+                ImGui::Text("Player: %s (%s)%s",
+                    marker.display_name.c_str(),
+                    marker.system_id.c_str(),
+                    marker.is_docked ? " [Docked]" : "");
+            }
+
+            if (!state.highlighted_systems.empty())
+            {
+                ImGui::Separator();
+                ImGui::TextUnformatted("Highlights:");
                 ImGui::Indent();
-
-                if (telemetry.combat.has_value())
+                for (const overlay::HighlightedSystem& highlight : state.highlighted_systems)
                 {
-                    const overlay::CombatTelemetry& combat = *telemetry.combat;
-                    ImGui::Text("Combat totals: dealt %.1f | taken %.1f", combat.total_damage_dealt, combat.total_damage_taken);
-
-                    if (combat.recent_window_seconds > 0.0)
+                    ImGui::BulletText("%s (%s) [%s]", highlight.display_name.c_str(), highlight.system_id.c_str(), highlight.category.c_str());
+                    if (highlight.note.has_value())
                     {
-                        const double dealtDps = combat.recent_damage_dealt / combat.recent_window_seconds;
-                        const double takenDps = combat.recent_damage_taken / combat.recent_window_seconds;
-                        ImGui::Text("Recent (%.0fs): dealt %.1f dmg (%.1f DPS) | taken %.1f dmg (%.1f DPS)",
-                            combat.recent_window_seconds,
-                            combat.recent_damage_dealt,
-                            dealtDps,
-                            combat.recent_damage_taken,
-                            takenDps);
-                    }
-                    else
-                    {
-                        ImGui::TextDisabled("Recent combat window unavailable");
-                    }
-
-                    if (combat.last_event_ms > 0)
-                    {
-                        const double secondsSince = nowMsValue > combat.last_event_ms
-                            ? static_cast<double>(nowMsValue - combat.last_event_ms) / 1000.0
-                            : 0.0;
-                        ImGui::TextDisabled("Last combat event %.1f s ago", secondsSince);
-                    }
-                    else
-                    {
-                        ImGui::TextDisabled("No combat events observed yet");
+                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.65f, 0.76f, 0.95f, 1.0f));
+                        ImGui::TextWrapped("%s", highlight.note->c_str());
+                        ImGui::PopStyleColor();
                     }
                 }
-                else
-                {
-                    ImGui::TextDisabled("Combat: no data yet");
-                }
-
-                if (telemetry.mining.has_value())
-                {
-                    const overlay::MiningTelemetry& mining = *telemetry.mining;
-                    ImGui::Text("Mining totals: %.1f m3", mining.total_volume_m3);
-
-                    if (mining.recent_window_seconds > 0.0)
-                    {
-                        const double ratePerMinute = (mining.recent_volume_m3 / mining.recent_window_seconds) * 60.0;
-                        ImGui::Text("Recent (%.0fs): %.1f m3 (%.1f m3/min)",
-                            mining.recent_window_seconds,
-                            mining.recent_volume_m3,
-                            ratePerMinute);
-                    }
-                    else
-                    {
-                        ImGui::TextDisabled("Recent mining window unavailable");
-                    }
-
-                    if (mining.last_event_ms > 0)
-                    {
-                        const double secondsSince = nowMsValue > mining.last_event_ms
-                            ? static_cast<double>(nowMsValue - mining.last_event_ms) / 1000.0
-                            : 0.0;
-                        ImGui::TextDisabled("Last mining event %.1f s ago", secondsSince);
-                    }
-                    else
-                    {
-                        ImGui::TextDisabled("No mining events observed yet");
-                    }
-
-                    if (!mining.buckets.empty())
-                    {
-                        ImGui::Spacing();
-                        ImGui::TextDisabled("Mining by resource:");
-                        ImGui::Indent();
-                        const std::size_t bucketLimit = std::min<std::size_t>(mining.buckets.size(), 4);
-                        for (std::size_t i = 0; i < bucketLimit; ++i)
-                        {
-                            const overlay::TelemetryBucket& bucket = mining.buckets[i];
-                            ImGui::BulletText("%s: %.1f m3 (recent %.1f m3)",
-                                bucket.label.c_str(),
-                                bucket.session_total,
-                                bucket.recent_total);
-                        }
-                        if (mining.buckets.size() > bucketLimit)
-                        {
-                            ImGui::TextDisabled("...%zu more resources", mining.buckets.size() - bucketLimit);
-                        }
-                        ImGui::Unindent();
-                    }
-                }
-                else
-                {
-                    ImGui::TextDisabled("Mining: no data yet");
-                }
-
-                if (telemetry.history.has_value())
-                {
-                    const overlay::TelemetryHistory& history = *telemetry.history;
-                    ImGui::Spacing();
-                    ImGui::TextDisabled("24h activity overview:");
-                    ImGui::Indent();
-                    ImGui::Text("Slices %zu / %u (%.0fs each)%s",
-                        history.slices.size(),
-                        history.capacity,
-                        history.slice_seconds,
-                        history.saturated ? " [rolling]" : "");
-
-                    if (!history.slices.empty())
-                    {
-                        std::vector<float> combined;
-                        combined.reserve(history.slices.size());
-                        float maxValue = 0.0f;
-                        for (const overlay::TelemetryHistorySlice& slice : history.slices)
-                        {
-                            const float value = static_cast<float>(slice.damage_dealt + slice.damage_taken + slice.mining_volume_m3);
-                            combined.push_back(value);
-                            maxValue = std::max(maxValue, value);
-                        }
-
-                        if (maxValue <= 0.0f)
-                        {
-                            maxValue = 1.0f;
-                        }
-
-                        ImGui::PlotLines("##telemetry_history_plot",
-                            combined.data(),
-                            static_cast<int>(combined.size()),
-                            0,
-                            nullptr,
-                            0.0f,
-                            maxValue * 1.1f,
-                            ImVec2(0.0f, 90.0f));
-
-                        const overlay::TelemetryHistorySlice& latest = history.slices.back();
-                        ImGui::TextDisabled("Latest slice: dealt %.1f / taken %.1f dmg | mining %.1f m3",
-                            latest.damage_dealt,
-                            latest.damage_taken,
-                            latest.mining_volume_m3);
-
-                        const double windowMinutes = (history.slice_seconds * history.slices.size()) / 60.0;
-                        ImGui::TextDisabled("Coverage: %.1f min", windowMinutes);
-                    }
-                    else
-                    {
-                        ImGui::TextDisabled("History: awaiting samples");
-                    }
-
-                    if (!history.reset_markers_ms.empty())
-                    {
-                        const std::uint64_t lastReset = history.reset_markers_ms.back();
-                        double minutesAgo = 0.0;
-                        if (nowMsValue > lastReset)
-                        {
-                            minutesAgo = static_cast<double>(nowMsValue - lastReset) / 60000.0;
-                        }
-                        ImGui::TextDisabled("Last reset %.1f min ago", minutesAgo);
-                    }
-
-                    ImGui::Unindent();
-                }
-                else
-                {
-                    ImGui::Spacing();
-                    ImGui::TextDisabled("Telemetry history unavailable");
-                }
-
                 ImGui::Unindent();
             }
-        }
 
-        if (state.player_marker.has_value())
-        {
-            ImGui::Separator();
-            const overlay::PlayerMarker& marker = *state.player_marker;
-            ImGui::Text("Player: %s (%s)%s",
-                marker.display_name.c_str(),
-                marker.system_id.c_str(),
-                marker.is_docked ? " [Docked]" : "");
-        }
-
-        if (!state.highlighted_systems.empty())
-        {
-            ImGui::Separator();
-            ImGui::TextUnformatted("Highlights:");
-            ImGui::Indent();
-            for (const overlay::HighlightedSystem& highlight : state.highlighted_systems)
+            if (state.camera_pose.has_value())
             {
-                ImGui::BulletText("%s (%s) [%s]", highlight.display_name.c_str(), highlight.system_id.c_str(), highlight.category.c_str());
-                if (highlight.note.has_value())
+                const overlay::CameraPose& pose = *state.camera_pose;
+                ImGui::Separator();
+                ImGui::Text("Camera position: (%.2f, %.2f, %.2f)", pose.position.x, pose.position.y, pose.position.z);
+                ImGui::Text("Camera look-at: (%.2f, %.2f, %.2f)", pose.look_at.x, pose.look_at.y, pose.look_at.z);
+                ImGui::Text("Camera FOV: %.1f\u00B0", pose.fov_degrees);
+            }
+
+            if (!state.hud_hints.empty())
+            {
+                ImGui::Separator();
+                ImGui::TextUnformatted("HUD hints:");
+                ImGui::Indent();
+                for (const overlay::HudHint& hint : state.hud_hints)
                 {
-                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.65f, 0.76f, 0.95f, 1.0f));
-                    ImGui::TextWrapped("%s", highlight.note->c_str());
-                    ImGui::PopStyleColor();
+                    ImGui::BulletText("%s%s", hint.text.c_str(), hint.dismissible ? " (dismissible)" : "");
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("[%s]", hint.active ? "active" : "inactive");
+                }
+                ImGui::Unindent();
+            }
+        };
+
+        auto renderMiningTab = [&]() {
+            if (!telemetry || !telemetry->mining.has_value())
+            {
+                ImGui::Spacing();
+                ImGui::TextDisabled("No mining telemetry yet. Begin mining to populate this tab.");
+                return;
+            }
+
+            const overlay::MiningTelemetry& mining = *telemetry->mining;
+
+            ImGui::Separator();
+            ImGui::Text("Mining totals: %.1f m3", mining.total_volume_m3);
+
+            if (mining.recent_window_seconds > 0.0)
+            {
+                    ImGui::Text("Recent (%.0fs): %.1f m3",
+                        mining.recent_window_seconds,
+                        mining.recent_volume_m3);
+            }
+            else
+            {
+                ImGui::TextDisabled("Recent mining window unavailable");
+            }
+
+            if (mining.session_duration_seconds > 0.0)
+            {
+                const double sessionMinutes = mining.session_duration_seconds / 60.0;
+                double sinceStartMinutes = sessionMinutes;
+                if (mining.session_start_ms > 0 && nowMsValue > mining.session_start_ms)
+                {
+                    sinceStartMinutes = static_cast<double>(nowMsValue - mining.session_start_ms) / 60000.0;
+                }
+                ImGui::TextDisabled("Session %.1f min (started %.1f min ago)", sessionMinutes, sinceStartMinutes);
+            }
+            else
+            {
+                ImGui::TextDisabled("Session has not started yet");
+            }
+
+            ImGui::Spacing();
+            ImGui::TextDisabled("Recent rate (m3/min)");
+
+            const float sparklineHeight = 72.0f;
+            const float sparklineWidth = std::max(180.0f, ImGui::GetContentRegionAvail().x);
+            const float paddingY = 6.0f;
+            const float windowMsF = static_cast<float>(kMiningRateHistoryWindowMs);
+                const float edgeInset = 3.0f;
+
+            ImVec2 sparkPos = ImGui::GetCursorScreenPos();
+            ImVec2 sparkMax = ImVec2(sparkPos.x + sparklineWidth, sparkPos.y + sparklineHeight);
+                const float leftX = sparkPos.x + edgeInset;
+                const float rightX = sparkPos.x + sparklineWidth - edgeInset;
+                const float innerWidth = std::max(1.0f, rightX - leftX);
+            const float innerHeight = std::max(1.0f, sparklineHeight - (paddingY * 2.0f));
+
+            const float sparkAlpha = windowFocused ? kWindowBgFocused.w : kWindowBgUnfocused.w;
+            ImVec4 sparkBackground = kMiningGraphBackgroundBase;
+            sparkBackground.w = sparkAlpha;
+            drawList->AddRectFilled(sparkPos, sparkMax, ImGui::ColorConvertFloat4ToU32(sparkBackground), 5.0f);
+            float latestRate = 0.0f;
+            float peakRate = 0.0f;
+
+            struct RatePlotSample
+            {
+                float rate;
+                std::uint64_t ageMs;
+            };
+
+            std::vector<RatePlotSample> plotSamples;
+            std::vector<ImVec2> linePoints;
+            float maxAgeMsForHover = 0.0f;
+
+            if (!miningRateValuesCopy.empty())
+            {
+                std::vector<MiningRateValue> ratePoints;
+                ratePoints.reserve(miningRateValuesCopy.size());
+                for (const MiningRateValue& value : miningRateValuesCopy)
+                {
+                    ratePoints.push_back(value);
+                }
+
+                const std::uint64_t anchorTimestamp = ratePoints.back().timestampMs;
+                const std::uint64_t windowStartCandidate = anchorTimestamp > kMiningRateHistoryWindowMs ? anchorTimestamp - kMiningRateHistoryWindowMs : 0;
+
+                auto firstRelevant = std::lower_bound(ratePoints.begin(), ratePoints.end(), windowStartCandidate,
+                    [](const MiningRateValue& sample, std::uint64_t value) {
+                        return sample.timestampMs < value;
+                    });
+
+                std::vector<MiningRateValue> workingPoints;
+                workingPoints.reserve(ratePoints.size());
+                if (firstRelevant != ratePoints.begin())
+                {
+                    workingPoints.push_back(*(firstRelevant - 1));
+                }
+                for (auto it = firstRelevant; it != ratePoints.end(); ++it)
+                {
+                    workingPoints.push_back(*it);
+                }
+                if (workingPoints.empty())
+                {
+                    workingPoints.push_back(ratePoints.back());
+                }
+
+                const std::uint64_t earliestTimestamp = workingPoints.front().timestampMs;
+                const std::uint64_t latestTimestamp = ratePoints.back().timestampMs;
+
+                std::uint64_t displayStartTs = earliestTimestamp;
+                if (latestTimestamp > kMiningRateHistoryWindowMs)
+                {
+                    const std::uint64_t candidateStart = latestTimestamp - kMiningRateHistoryWindowMs;
+                    if (candidateStart > earliestTimestamp)
+                    {
+                        displayStartTs = candidateStart;
+                    }
+                }
+                if (displayStartTs < earliestTimestamp)
+                {
+                    displayStartTs = earliestTimestamp;
+                }
+
+                const std::uint64_t displayCoverage = latestTimestamp > displayStartTs ? latestTimestamp - displayStartTs : 0;
+                const std::uint64_t maxAgeMs = std::min<std::uint64_t>(kMiningRateHistoryWindowMs, displayCoverage);
+                maxAgeMsForHover = std::min<float>(windowMsF, static_cast<float>(maxAgeMs));
+
+                auto interpolateRateAt = [&](std::uint64_t timestamp) -> float {
+                    if (timestamp <= workingPoints.front().timestampMs)
+                    {
+                        return workingPoints.front().rate;
+                    }
+                    if (timestamp >= workingPoints.back().timestampMs)
+                    {
+                        return workingPoints.back().rate;
+                    }
+
+                    auto upper = std::lower_bound(workingPoints.begin(), workingPoints.end(), timestamp,
+                        [](const MiningRateValue& sample, std::uint64_t value) {
+                            return sample.timestampMs < value;
+                        });
+
+                    if (upper == workingPoints.begin())
+                    {
+                        return upper->rate;
+                    }
+                    if (upper == workingPoints.end())
+                    {
+                        return workingPoints.back().rate;
+                    }
+
+                    const MiningRateValue& right = *upper;
+                    const MiningRateValue& left = *(upper - 1);
+                    const std::uint64_t span = right.timestampMs - left.timestampMs;
+                    if (span == 0)
+                    {
+                        return right.rate;
+                    }
+
+                    const float fraction = static_cast<float>(timestamp - left.timestampMs) / static_cast<float>(span);
+                    return left.rate + fraction * (right.rate - left.rate);
+                };
+
+                const std::uint64_t anchorMs = latestTimestamp;
+                const std::uint64_t sampleIntervalMs = 250;
+
+                for (std::uint64_t ageMs = 0; ageMs <= maxAgeMs; ageMs += sampleIntervalMs)
+                {
+                    const std::uint64_t sampleTimestamp = anchorMs > ageMs ? anchorMs - ageMs : anchorMs;
+                    const float rate = std::max(0.0f, interpolateRateAt(sampleTimestamp));
+                    plotSamples.push_back({rate, ageMs});
+                    peakRate = std::max(peakRate, rate);
+                }
+
+                if (plotSamples.empty())
+                {
+                    const float rateNow = std::max(0.0f, workingPoints.back().rate);
+                    plotSamples.push_back({rateNow, 0});
+                    peakRate = std::max(peakRate, rateNow);
+                }
+                else if (plotSamples.back().ageMs != maxAgeMs)
+                {
+                    const std::uint64_t sampleTimestamp = anchorMs > maxAgeMs ? anchorMs - maxAgeMs : anchorMs;
+                    const float rate = std::max(0.0f, interpolateRateAt(sampleTimestamp));
+                    plotSamples.push_back({rate, maxAgeMs});
+                    peakRate = std::max(peakRate, rate);
+                }
+
+                if (peakRate <= 0.0f)
+                {
+                    peakRate = 1.0f;
+                }
+
+                latestRate = plotSamples.front().rate;
+
+                linePoints.reserve(plotSamples.size());
+                for (const RatePlotSample& sample : plotSamples)
+                {
+                    const float normalizedTime = 1.0f - std::min(static_cast<float>(sample.ageMs) / windowMsF, 1.0f);
+                    const float x = leftX + normalizedTime * innerWidth;
+                    const float normalizedRate = std::clamp(sample.rate / peakRate, 0.0f, 1.0f);
+                    const float y = sparkMax.y - paddingY - normalizedRate * innerHeight;
+                    linePoints.emplace_back(x, y);
+                }
+
+                if (linePoints.size() >= 2)
+                {
+                    drawList->AddPolyline(linePoints.data(), static_cast<int>(linePoints.size()), ImGui::ColorConvertFloat4ToU32(kMiningGraphLine), false, 2.0f);
+                }
+                if (!linePoints.empty())
+                {
+                    const ImU32 latestColor = ImGui::ColorConvertFloat4ToU32(ImVec4(1.0f, 0.52f, 0.12f, 1.0f));
+                    drawList->AddCircleFilled(linePoints.front(), 3.0f, latestColor);
                 }
             }
-            ImGui::Unindent();
-        }
-
-        if (state.camera_pose.has_value())
-        {
-            const overlay::CameraPose& pose = *state.camera_pose;
-            ImGui::Separator();
-            ImGui::Text("Camera position: (%.2f, %.2f, %.2f)", pose.position.x, pose.position.y, pose.position.z);
-            ImGui::Text("Camera look-at: (%.2f, %.2f, %.2f)", pose.look_at.x, pose.look_at.y, pose.look_at.z);
-            ImGui::Text("Camera FOV: %.1f\u00B0", pose.fov_degrees);
-        }
-
-        if (!state.hud_hints.empty())
-        {
-            ImGui::Separator();
-            ImGui::TextUnformatted("HUD hints:");
-            ImGui::Indent();
-            for (const overlay::HudHint& hint : state.hud_hints)
+            else
             {
-                ImGui::BulletText("%s%s", hint.text.c_str(), hint.dismissible ? " (dismissible)" : "");
+                const char* waitingText = "Waiting for mining rate samples...";
+                const ImVec2 textSize = ImGui::CalcTextSize(waitingText);
+                const ImVec2 textPos = ImVec2(
+                    sparkPos.x + (sparklineWidth - textSize.x) * 0.5f,
+                    sparkPos.y + (sparklineHeight - textSize.y) * 0.5f);
+                drawList->AddText(textPos, ImGui::ColorConvertFloat4ToU32(ImVec4(0.95f, 0.78f, 0.56f, 0.85f)), waitingText);
+            }
+
+            ImGui::SetCursorScreenPos(sparkPos);
+            ImGui::InvisibleButton("MiningRateSparkline", ImVec2(sparklineWidth, sparklineHeight));
+
+            if (ImGui::IsItemHovered() && !plotSamples.empty())
+            {
+                const ImVec2 mouse = ImGui::GetIO().MousePos;
+                const float relX = std::clamp((mouse.x - leftX) / innerWidth, 0.0f, 1.0f);
+                const float requestedAgeMs = (1.0f - relX) * windowMsF;
+                const float clampedAgeMs = std::clamp(requestedAgeMs, 0.0f, maxAgeMsForHover);
+
+                auto it = std::lower_bound(plotSamples.begin(), plotSamples.end(), static_cast<std::uint64_t>(clampedAgeMs),
+                    [](const RatePlotSample& sample, std::uint64_t ageMs) {
+                        return sample.ageMs < ageMs;
+                    });
+
+                std::size_t index = 0;
+                if (it == plotSamples.end())
+                {
+                    index = plotSamples.size() - 1;
+                }
+                else
+                {
+                    index = static_cast<std::size_t>(std::distance(plotSamples.begin(), it));
+                    if (it != plotSamples.begin())
+                    {
+                        const std::size_t prevIndex = index - 1;
+                        const std::uint64_t prevAge = plotSamples[prevIndex].ageMs;
+                        const std::uint64_t currAge = plotSamples[index].ageMs;
+                        const float prevDiff = std::abs(static_cast<float>(prevAge) - clampedAgeMs);
+                        const float currDiff = std::abs(static_cast<float>(currAge) - clampedAgeMs);
+                        if (prevDiff < currDiff)
+                        {
+                            index = prevIndex;
+                        }
+                    }
+                }
+
+                const float ageSeconds = static_cast<float>(plotSamples[index].ageMs) / 1000.0f;
+                ImGui::SetTooltip("t-%.1fs: %.1f m3/min", ageSeconds, plotSamples[index].rate);
+            }
+
+            if (!plotSamples.empty())
+            {
+                ImGui::Text("Latest: %.1f m3/min", latestRate);
                 ImGui::SameLine();
-                ImGui::TextDisabled("[%s]", hint.active ? "active" : "inactive");
+                ImGui::TextDisabled("Peak %.1f", peakRate);
+                ImGui::SameLine();
+                ImGui::TextDisabled("Window %.0f s", static_cast<float>(kMiningRateHistoryWindowMs) / 1000.0f);
+                ImGui::SameLine();
+                ImGui::TextDisabled("Smoothing %.0f s", static_cast<float>(kMiningRateSmoothingWindowMs) / 1000.0f);
             }
-            ImGui::Unindent();
-        }
 
-        if (state.active_route_node_id.has_value())
-        {
+            if (!mining.buckets.empty())
+            {
+                ImGui::Spacing();
+                ImGui::TextDisabled("Mining by resource (session totals):");
+                ImGui::Indent();
+                const std::size_t bucketLimit = std::min<std::size_t>(mining.buckets.size(), static_cast<std::size_t>(8));
+                for (std::size_t i = 0; i < bucketLimit; ++i)
+                {
+                    const overlay::TelemetryBucket& bucket = mining.buckets[i];
+                    ImGui::BulletText("%s: %.1f m3",
+                        bucket.label.c_str(),
+                        bucket.session_total);
+                }
+                if (mining.buckets.size() > bucketLimit)
+                {
+                    ImGui::TextDisabled("...%zu more resources", mining.buckets.size() - bucketLimit);
+                }
+                ImGui::Unindent();
+            }
+
+            {
+                auto& feedback = telemetry_reset_feedback();
+                bool resetInFlight = false;
+                bool lastSuccess = false;
+                std::string lastMessage;
+                {
+                    std::lock_guard<std::mutex> lock(feedback.mutex);
+                    resetInFlight = feedback.inFlight;
+                    lastSuccess = feedback.lastSuccess;
+                    lastMessage = feedback.message;
+                }
+
+                ImGui::Separator();
+                const bool disableButton = resetInFlight;
+                if (disableButton)
+                {
+                    ImGui::BeginDisabled();
+                }
+                ImGui::PushStyleColor(ImGuiCol_Button, kButtonBase);
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kButtonHover);
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, kButtonActive);
+                const bool clicked = ImGui::Button(disableButton ? "Resetting..." : "Reset session");
+                ImGui::PopStyleColor(3);
+                if (disableButton)
+                {
+                    ImGui::EndDisabled();
+                }
+
+                if (clicked)
+                {
+                    bool launchReset = false;
+                    {
+                        std::lock_guard<std::mutex> lock(feedback.mutex);
+                        if (!feedback.inFlight)
+                        {
+                            feedback.inFlight = true;
+                            feedback.lastAttemptMs = now_ms();
+                            feedback.lastSuccess = false;
+                            feedback.message = "Resetting...";
+                            launchReset = true;
+                            resetInFlight = true;
+                            lastSuccess = false;
+                            lastMessage = feedback.message;
+                        }
+                    }
+
+                    if (launchReset)
+                    {
+                        OverlayRenderer* renderer = this;
+                        std::thread([renderer]() {
+                            const auto result = renderer->performTelemetryReset();
+                            auto& feedback = telemetry_reset_feedback();
+                            std::lock_guard<std::mutex> guard(feedback.mutex);
+                            feedback.inFlight = false;
+                            feedback.lastSuccess = result.success;
+                            feedback.message = result.message;
+                            if (result.success)
+                            {
+                                feedback.lastSuccessMs = result.resetMs;
+                            }
+                        }).detach();
+                    }
+                }
+
+                if (!lastMessage.empty())
+                {
+                    const ImVec4 color = lastSuccess ? ImVec4(0.45f, 0.86f, 0.58f, 1.0f) : ImVec4(0.9f, 0.45f, 0.45f, 1.0f);
+                    ImGui::SameLine();
+                    ImGui::TextColored(color, "%s", lastMessage.c_str());
+                }
+            }
+
+        };
+
+        auto renderCombatTab = [&]() {
+            if (!telemetry || !telemetry->combat.has_value())
+            {
+                ImGui::TextDisabled("No combat telemetry yet. Engage a target to populate this tab.");
+                return;
+            }
+
+            const overlay::CombatTelemetry& combat = *telemetry->combat;
+
             ImGui::Separator();
-            ImGui::Text("Active route node: %s", state.active_route_node_id->c_str());
-        }
-    }
+            ImGui::Text("Total damage: dealt %.1f | taken %.1f", combat.total_damage_dealt, combat.total_damage_taken);
 
-    if (eventWriterReady_.load())
-    {
-        ImGui::Separator();
-        if (ImGui::Button("Send waypoint advance event"))
-        {
-            overlay::OverlayEvent event;
-            event.type = overlay::OverlayEventType::WaypointAdvanced;
-            event.payload = nlohmann::json{{"source", "overlay"}, {"sent_ms", nowMsValue}}.dump();
-            if (!eventWriter_.publish(event))
+            if (combat.recent_window_seconds > 0.0)
             {
-                spdlog::warn("Failed to publish WaypointAdvanced event");
+                const double dealtDps = combat.recent_damage_dealt / combat.recent_window_seconds;
+                const double takenDps = combat.recent_damage_taken / combat.recent_window_seconds;
+                ImGui::Text("Recent (%.0fs): dealt %.1f dmg (%.1f DPS) | taken %.1f dmg (%.1f DPS)",
+                    combat.recent_window_seconds,
+                    combat.recent_damage_dealt,
+                    dealtDps,
+                    combat.recent_damage_taken,
+                    takenDps);
             }
+            else
+            {
+                ImGui::TextDisabled("Recent combat window unavailable");
+            }
+
+            if (combat.last_event_ms > 0)
+            {
+                const double secondsSince = nowMsValue > combat.last_event_ms
+                    ? static_cast<double>(nowMsValue - combat.last_event_ms) / 1000.0
+                    : 0.0;
+                ImGui::TextDisabled("Last combat event %.1f s ago", secondsSince);
+            }
+            else
+            {
+                ImGui::TextDisabled("No combat events observed yet");
+            }
+
+            if (telemetry && telemetry->history.has_value())
+            {
+                const overlay::TelemetryHistory& history = *telemetry->history;
+                ImGui::Separator();
+                ImGui::TextDisabled("Damage per slice (%.0fs slices, %u max)", history.slice_seconds, history.capacity);
+
+                if (!history.slices.empty())
+                {
+                    std::vector<float> dealt;
+                    std::vector<float> taken;
+                    dealt.reserve(history.slices.size());
+                    taken.reserve(history.slices.size());
+                    float maxValue = 0.0f;
+                    for (const overlay::TelemetryHistorySlice& slice : history.slices)
+                    {
+                        dealt.push_back(static_cast<float>(slice.damage_dealt));
+                        taken.push_back(static_cast<float>(slice.damage_taken));
+                        const float latestMax = std::max(dealt.back(), taken.back());
+                        maxValue = std::max(maxValue, latestMax);
+                    }
+
+                    if (maxValue <= 0.0f)
+                    {
+                        maxValue = 1.0f;
+                    }
+
+                    ImGui::PlotLines("Damage dealt",
+                        dealt.data(),
+                        static_cast<int>(dealt.size()),
+                        0,
+                        nullptr,
+                        0.0f,
+                        maxValue * 1.1f,
+                        ImVec2(0.0f, 70.0f));
+
+                    ImGui::PlotLines("Damage taken",
+                        taken.data(),
+                        static_cast<int>(taken.size()),
+                        0,
+                        nullptr,
+                        0.0f,
+                        maxValue * 1.1f,
+                        ImVec2(0.0f, 70.0f));
+
+                    const overlay::TelemetryHistorySlice& latest = history.slices.back();
+                    ImGui::TextDisabled("Latest slice: dealt %.1f dmg | taken %.1f dmg", latest.damage_dealt, latest.damage_taken);
+                    const double windowMinutes = (history.slice_seconds * history.slices.size()) / 60.0;
+                    ImGui::TextDisabled("Coverage: %.1f min", windowMinutes);
+                }
+                else
+                {
+                    ImGui::TextDisabled("History: awaiting samples");
+                }
+
+                if (!history.reset_markers_ms.empty())
+                {
+                    const std::uint64_t lastReset = history.reset_markers_ms.back();
+                    double minutesAgo = 0.0;
+                    if (nowMsValue > lastReset)
+                    {
+                        minutesAgo = static_cast<double>(nowMsValue - lastReset) / 60000.0;
+                    }
+                    ImGui::TextDisabled("Last reset %.1f min ago", minutesAgo);
+                }
+            }
+        };
+
+        constexpr int kTabOverview = 0;
+        constexpr int kTabMining = 1;
+        constexpr int kTabCombat = 2;
+
+        if (currentTabIndex_ < kTabOverview || currentTabIndex_ > kTabCombat)
+        {
+            currentTabIndex_ = kTabOverview;
         }
 
-        ImGui::SameLine();
-        if (ImGui::Button("Request follow toggle"))
+    ImGui::PushStyleColor(ImGuiCol_Tab, kTabBase);
+    ImGui::PushStyleColor(ImGuiCol_TabHovered, kTabHover);
+    ImGui::PushStyleColor(ImGuiCol_TabActive, kTabActive);
+    ImGui::PushStyleColor(ImGuiCol_TabUnfocused, kTabInactive);
+    ImGui::PushStyleColor(ImGuiCol_TabUnfocusedActive, kTabActive);
+
+        if (ImGui::BeginTabBar("EFOverlayTabs"))
         {
-            overlay::OverlayEvent event;
-            event.type = overlay::OverlayEventType::FollowModeToggled;
-            event.payload = nlohmann::json{{"requested", true}}.dump();
-            if (!eventWriter_.publish(event))
-            {
-                spdlog::warn("Failed to publish FollowModeToggled event");
-            }
+            auto beginTab = [&](const char* label, int index, auto&& renderFn) {
+                ImGuiTabItemFlags flags = 0;
+                if (!tabsInitialized_ && index == currentTabIndex_)
+                {
+                    flags |= ImGuiTabItemFlags_SetSelected;
+                }
+
+                if (ImGui::BeginTabItem(label, nullptr, flags))
+                {
+                    currentTabIndex_ = index;
+                    tabsInitialized_ = true;
+                    renderFn();
+                    ImGui::EndTabItem();
+                }
+            };
+
+            beginTab("Overview", kTabOverview, renderOverviewTab);
+            beginTab("Mining", kTabMining, renderMiningTab);
+            beginTab("Combat", kTabCombat, renderCombatTab);
+
+            ImGui::EndTabBar();
         }
-    }
-    else
-    {
-        ImGui::Separator();
-        ImGui::TextColored(ImVec4(0.9f, 0.2f, 0.2f, 1.0f), "Event queue unavailable.");
+
+    ImGui::PopStyleColor(5);
+
+    const ImVec4 ellipsisColor = ImVec4(0.92f, 0.93f, 0.95f, 0.96f);
+    drawList->AddText(ImGui::GetFont(), ImGui::GetFontSize() * ellipsisScale, dotsPos, ImGui::GetColorU32(ellipsisColor), "...");
     }
 
     ImGui::End();

@@ -17,6 +17,7 @@
 #include <map>
 #include <iomanip>
 #include <cctype>
+#include <cmath>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -203,13 +204,29 @@ namespace helper::logs
     class LogWatcher::MiningTelemetryAggregator
     {
     public:
+        static constexpr std::chrono::seconds kDefaultWindow{120};
+
         void add(const MiningYieldEvent& event)
         {
-            prune(event.timestamp);
-            recent_.push_back(event);
-            totalVolume_ += event.volumeM3;
-            lastEvent_ = event.timestamp;
-            sessionBuckets_[event.resource] += event.volumeM3;
+            MiningYieldEvent normalized = event;
+            normalized.resource = normalizeResourceLabel(normalized.resource);
+            if (normalized.resource.empty())
+            {
+                normalized.resource = "Unknown resource";
+            }
+
+            prune(normalized.timestamp);
+
+            if (sessionStart_.time_since_epoch().count() == 0 && normalized.timestamp.time_since_epoch().count() != 0)
+            {
+                sessionStart_ = normalized.timestamp;
+            }
+
+            recent_.push_back(std::move(normalized));
+            const auto& stored = recent_.back();
+            totalVolume_ += stored.volumeM3;
+            lastEvent_ = stored.timestamp;
+            sessionBuckets_[stored.resource] += stored.volumeM3;
         }
 
         std::optional<MiningTelemetrySnapshot> snapshot(const std::chrono::system_clock::time_point& now)
@@ -228,6 +245,12 @@ namespace helper::logs
             {
                 snapshot.lastEventMs = to_ms(lastEvent_);
             }
+            if (sessionStart_.time_since_epoch().count() != 0)
+            {
+                snapshot.sessionStartMs = to_ms(sessionStart_);
+                const auto elapsed = now - sessionStart_;
+                snapshot.sessionDurationSeconds = std::chrono::duration_cast<std::chrono::duration<double>>(elapsed).count();
+            }
 
             double recentVolume = 0.0;
             std::map<std::string, double> recentBuckets;
@@ -240,17 +263,9 @@ namespace helper::logs
 
             if (!sessionBuckets_.empty() || !recentBuckets.empty())
             {
-                std::map<std::string, double> merged = sessionBuckets_;
-                for (const auto& kv : recentBuckets)
-                {
-                    if (merged.find(kv.first) == merged.end())
-                    {
-                        merged.emplace(kv.first, 0.0);
-                    }
-                }
+                snapshot.buckets.reserve(sessionBuckets_.size() + recentBuckets.size());
 
-                snapshot.buckets.reserve(merged.size());
-                for (const auto& kv : merged)
+                for (const auto& kv : sessionBuckets_)
                 {
                     MiningBucketSnapshot bucket;
                     bucket.resource = kv.first;
@@ -261,6 +276,34 @@ namespace helper::logs
                     }
                     snapshot.buckets.push_back(std::move(bucket));
                 }
+
+                for (const auto& kv : recentBuckets)
+                {
+                    if (sessionBuckets_.find(kv.first) != sessionBuckets_.end())
+                    {
+                        continue;
+                    }
+                    MiningBucketSnapshot bucket;
+                    bucket.resource = kv.first;
+                    bucket.sessionTotalM3 = 0.0;
+                    bucket.recentVolumeM3 = kv.second;
+                    snapshot.buckets.push_back(std::move(bucket));
+                }
+
+                std::sort(snapshot.buckets.begin(), snapshot.buckets.end(), [](const MiningBucketSnapshot& a, const MiningBucketSnapshot& b) {
+                    constexpr double epsilon = 1e-6;
+                    const double diffSession = a.sessionTotalM3 - b.sessionTotalM3;
+                    if (std::abs(diffSession) > epsilon)
+                    {
+                        return diffSession > 0.0;
+                    }
+                    const double diffRecent = a.recentVolumeM3 - b.recentVolumeM3;
+                    if (std::abs(diffRecent) > epsilon)
+                    {
+                        return diffRecent > 0.0;
+                    }
+                    return a.resource < b.resource;
+                });
             }
 
             if (!snapshot.hasData() && snapshot.recentVolumeM3 <= 0.0)
@@ -277,9 +320,25 @@ namespace helper::logs
             totalVolume_ = 0.0;
             lastEvent_ = std::chrono::system_clock::time_point{};
             sessionBuckets_.clear();
+            sessionStart_ = std::chrono::system_clock::time_point{};
         }
 
     private:
+        static std::string normalizeResourceLabel(std::string label)
+        {
+            const auto notSpace = [](unsigned char ch) {
+                return std::isspace(ch) == 0;
+            };
+            auto begin = std::find_if(label.begin(), label.end(), notSpace);
+            auto end = std::find_if(label.rbegin(), label.rend(), notSpace).base();
+            if (begin >= end)
+            {
+                return {};
+            }
+            std::string trimmed(begin, end);
+            return trimmed;
+        }
+
         void prune(const std::chrono::system_clock::time_point& now)
         {
             const auto cutoff = now - window_;
@@ -291,9 +350,10 @@ namespace helper::logs
 
         std::deque<MiningYieldEvent> recent_;
         double totalVolume_{0.0};
-        std::chrono::seconds window_{120};
+        std::chrono::seconds window_{kDefaultWindow};
         std::chrono::system_clock::time_point lastEvent_{};
         std::map<std::string, double> sessionBuckets_;
+        std::chrono::system_clock::time_point sessionStart_{};
     };
 
     class LogWatcher::TelemetryHistoryAggregator
@@ -1251,6 +1311,8 @@ namespace helper::logs
                     payload.recent_volume_m3 = mining.recentVolumeM3;
                     payload.recent_window_seconds = mining.recentWindowSeconds;
                     payload.last_event_ms = mining.lastEventMs;
+                    payload.session_start_ms = mining.sessionStartMs;
+                    payload.session_duration_seconds = mining.sessionDurationSeconds;
                     if (!mining.buckets.empty())
                     {
                         payload.buckets.reserve(mining.buckets.size());
@@ -1327,6 +1389,12 @@ namespace helper::logs
         TelemetrySummary summary;
         summary.combat = combatTelemetryAggregator_->snapshot(now);
         summary.mining = miningTelemetryAggregator_->snapshot(now);
+        if (!summary.mining.has_value())
+        {
+            MiningTelemetrySnapshot placeholder;
+            placeholder.recentWindowSeconds = static_cast<double>(MiningTelemetryAggregator::kDefaultWindow.count());
+            summary.mining = std::move(placeholder);
+        }
         auto historySnapshot = telemetryHistoryAggregator_->snapshot(now);
         if (historySnapshot.hasData() || !historySnapshot.resetMarkersMs.empty())
         {
@@ -1348,6 +1416,12 @@ namespace helper::logs
         TelemetrySummary summary;
         summary.combat = combatTelemetryAggregator_->snapshot(now);
         summary.mining = miningTelemetryAggregator_->snapshot(now);
+        if (!summary.mining.has_value())
+        {
+            MiningTelemetrySnapshot placeholder;
+            placeholder.recentWindowSeconds = static_cast<double>(MiningTelemetryAggregator::kDefaultWindow.count());
+            summary.mining = std::move(placeholder);
+        }
         auto historySnapshot = telemetryHistoryAggregator_->snapshot(now);
         if (historySnapshot.hasData() || !historySnapshot.resetMarkersMs.empty())
         {

@@ -1,3 +1,37 @@
+- Goal: Bring back the warm orange HUD palette and sparkline tint while keeping the base window glass dark and transparent to match the EVE Frontier UI.
+- Files: `src/overlay/overlay_renderer.cpp`.
+- Diff: ~+50 / −50 (color constants, accent/resize grip palette, ellipsis tint + ordering, glass transparency tweak, brighter orange match, sparkline inherits focus alpha).
+- Risk: low (styling only).
+- Gates: build ✅ (`cmake --build build --config RelWithDebInfo`).
+- Follow-ups: Capture in-game screenshots to confirm the focused transparency still reads correctly across bright backgrounds.
+
+## 2025-10-14 – Overlay renderer lifecycle restore & telemetry reset helper
+- Goal: Reintroduce the renderer scaffolding lost during the mining sparkline refactor, restore the mining history constants, and route the telemetry reset button through a dedicated helper so the overlay builds again.
+- Files: `src/overlay/overlay_renderer.cpp`, `src/overlay/overlay_renderer.hpp`.
+- Diff: ~+150 / −110 (includes, lifecycle stubs, mining history constants, telemetry reset result struct, worker thread helper).
+- Risk: medium (core overlay renderer behaviour + background thread wiring).
+- Gates: build ✅ (`cmake --build build --config RelWithDebInfo` via MSBuild) | tests ⚪ (not rerun; combat parser fix still pending) | smoke ⏳ (requires reinjection during mining session).
+- Cross-repo: None.
+- Follow-ups: Teach the helper/runtime side to handle the new `telemetry_reset` event path and confirm the overlay toast renders during live mining.
+
+## 2025-10-14 – Mining sparkline resample & smoothing
+- Goal: Keep the mining rate sparkline aligned to a fixed 120 s window, remove start-up spikes, and render a smoother trace between helper updates.
+- Files: `src/overlay/overlay_renderer.cpp`.
+- Diff: ~+190 / −160 (interpolated volume lookup, fixed-window resample loop, hover lookup rewrite).
+- Risk: medium (changes to mining HUD math and draw path inside injected overlay).
+- Gates: build ✅ (`cmake --build build --config RelWithDebInfo`) | tests ⚪ (not re-run; telemetry harness still pending) | smoke ⏳ (awaiting live mining session with new DLL).
+- Cross-repo: None (helper/shared schema untouched).
+- Follow-ups: Observe in-client mining sessions for any lingering hover gaps or rate spikes; adjust resample cadence if performance issues appear.
+
+## 2025-10-14 – Mining telemetry session surfaces
+- Goal: Add per-ore session aggregation plus HUD and tray affordances so Phase 2 mining telemetry is observable and resettable end-to-end.
+- Files: `src/helper/log_watcher.{hpp,cpp}`, `src/shared/overlay_schema.{hpp,cpp}`, `src/helper/helper_runtime.cpp`, `src/helper/tray_application.cpp`, `src/overlay/overlay_renderer.cpp`, `src/overlay/CMakeLists.txt`.
+- Diff: ~+260 / −90 (aggregator timing + bucket sorting, schema plumbing, overlay histogram/reset control, tray summary tweak, new httplib link).
+- Risk: medium (log parsing + injected HUD behaviour + helper HTTP integration).
+- Gates: build ✅ (`cmake --build build --target ef_overlay_module`) | tests ⚪ (not run; telemetry tests still pending) | smoke ⏳ (awaiting in-game mining session to verify reset + charts).
+- Cross-repo: None (Cloudflare/web helper wiring to follow in EF-Map-main after local telemetry bake).
+- Follow-ups: Exercise mining loops in-game to confirm histogram + reset UX, then surface the same aggregations in the EF-Map helper panel.
+
 ## 2025-10-14 – Packaging roadmap staged for later
 - Goal: Document the future installer/tray/protocol workflow inside the shared overlay plan so packaging work is ready once the helper features stabilize.
 - Files: `docs/initiatives/GAME_OVERLAY_PLAN.md`, `docs/decision-log.md` (mirrors `EF-Map-main`).

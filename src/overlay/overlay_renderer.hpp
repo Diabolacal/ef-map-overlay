@@ -5,6 +5,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <deque>
 
 #include <windows.h>
 
@@ -34,6 +35,16 @@ private:
 
     void pollLoop();
     void resetState();
+    void recordMiningRateLocked(const overlay::OverlayState& state, std::uint64_t updatedAtMs);
+
+    struct TelemetryResetResult
+    {
+        bool success{false};
+        std::uint64_t resetMs{0};
+        std::string message;
+    };
+
+    TelemetryResetResult performTelemetryReset();
 
     std::atomic_bool initialized_{false};
     std::atomic_bool running_{false};
@@ -55,4 +66,20 @@ private:
     bool lastSourceOnline_{true};
     std::string autoHideReason_;
     bool restoreVisibleOnResume_{false};
+    int currentTabIndex_{0};
+    bool tabsInitialized_{false};
+
+    struct MiningRateSample
+    {
+        std::uint64_t timestampMs{0};
+        double totalVolumeM3{0.0};
+    };
+    std::deque<MiningRateSample> miningRateHistory_;
+
+    struct MiningRateValue
+    {
+        std::uint64_t timestampMs{0};
+        float rate{0.0f};
+    };
+    std::deque<MiningRateValue> miningRateValues_;
 };

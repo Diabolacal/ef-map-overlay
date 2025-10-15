@@ -73,6 +73,8 @@ namespace overlay
         double recent_volume_m3{0.0};
         double recent_window_seconds{120.0};
         std::uint64_t last_event_ms{0};
+        std::uint64_t session_start_ms{0};
+        double session_duration_seconds{0.0};
         std::vector<TelemetryBucket> buckets;
     };
 

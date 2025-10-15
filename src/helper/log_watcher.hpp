@@ -61,10 +61,12 @@ namespace helper::logs
         double recentVolumeM3{0.0};
         double recentWindowSeconds{120.0};
         std::uint64_t lastEventMs{0};
+        std::uint64_t sessionStartMs{0};
+        double sessionDurationSeconds{0.0};
         std::vector<MiningBucketSnapshot> buckets;
         [[nodiscard]] bool hasData() const
         {
-            return totalVolumeM3 > 0.0 || lastEventMs != 0;
+            return totalVolumeM3 > 0.0 || lastEventMs != 0 || sessionStartMs != 0;
         }
     };
 

@@ -831,6 +831,10 @@ std::wstring HelperTrayApplication::formatTelemetryLine(const HelperRuntime::Sta
             }
             segment += L")";
         }
+        if (telemetry.mining->sessionDurationSeconds > 0.0)
+        {
+            segment += L" [" + format_double(telemetry.mining->sessionDurationSeconds / 60.0) + L" min]";
+        }
         appendSegment(segment);
     }
 

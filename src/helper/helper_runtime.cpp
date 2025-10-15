@@ -173,7 +173,9 @@ namespace
                 {"total_volume_m3", mining.totalVolumeM3},
                 {"recent_volume_m3", mining.recentVolumeM3},
                 {"recent_window_seconds", mining.recentWindowSeconds},
-                {"last_event_ms", mining.lastEventMs}
+                {"last_event_ms", mining.lastEventMs},
+                {"session_start_ms", mining.sessionStartMs},
+                {"session_duration_seconds", mining.sessionDurationSeconds}
             };
 
             if (!mining.buckets.empty())

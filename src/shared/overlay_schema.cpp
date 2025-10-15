@@ -272,6 +272,14 @@ namespace overlay
                 {
                     mining.last_event_ms = miningJson.at("last_event_ms").get<std::uint64_t>();
                 }
+                if (miningJson.contains("session_start_ms"))
+                {
+                    mining.session_start_ms = miningJson.at("session_start_ms").get<std::uint64_t>();
+                }
+                if (miningJson.contains("session_duration_seconds"))
+                {
+                    mining.session_duration_seconds = miningJson.at("session_duration_seconds").get<double>();
+                }
                 if (miningJson.contains("buckets") && miningJson.at("buckets").is_array())
                 {
                     const auto& bucketsJson = miningJson.at("buckets");
@@ -514,7 +522,9 @@ namespace overlay
                     {"total_volume_m3", mining.total_volume_m3},
                     {"recent_volume_m3", mining.recent_volume_m3},
                     {"recent_window_seconds", mining.recent_window_seconds},
-                    {"last_event_ms", mining.last_event_ms}
+                    {"last_event_ms", mining.last_event_ms},
+                    {"session_start_ms", mining.session_start_ms},
+                    {"session_duration_seconds", mining.session_duration_seconds}
                 };
                 if (!mining.buckets.empty())
                 {
