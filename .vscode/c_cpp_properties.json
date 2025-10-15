@@ -1,0 +1,36 @@
+{
+    "configurations": [
+        {
+            "name": "msvc-x64",
+            "intelliSenseMode": "msvc-x64",
+            "compilerPath": "cl.exe",
+            "cStandard": "c17",
+            "cppStandard": "c++20",
+            "includePath": [
+                "${workspaceFolder}/src",
+                "${workspaceFolder}/src/helper",
+                "${workspaceFolder}/src/injector",
+                "${workspaceFolder}/src/overlay",
+                "${workspaceFolder}/src/shared",
+                "${workspaceFolder}/build/_deps/asio-src/asio/include",
+                "${workspaceFolder}/build/_deps/cpp_httplib-src",
+                "${workspaceFolder}/build/_deps/imgui-src",
+                "${workspaceFolder}/build/_deps/imgui-src/backends",
+                "${workspaceFolder}/build/_deps/minhook-src/include",
+                "${workspaceFolder}/build/_deps/nlohmann_json-src/include",
+                "${workspaceFolder}/build/_deps/nlohmann_json-src/single_include",
+                "${workspaceFolder}/build/_deps/spdlog-src/include"
+            ],
+            "browse": {
+                "path": [
+                    "${workspaceFolder}/src",
+                    "${workspaceFolder}/build/_deps/imgui-src",
+                    "${workspaceFolder}/build/_deps/nlohmann_json-src/include",
+                    "${workspaceFolder}/build/_deps/spdlog-src/include"
+                ],
+                "limitSymbolsToIncludedHeaders": false
+            }
+        }
+    ],
+    "version": 4
+}
