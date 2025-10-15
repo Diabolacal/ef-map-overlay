@@ -16,7 +16,7 @@ For the combined guardrails that apply to both repos, cross-reference `EF-Map-ma
 | Need | Start here | Notes |
 | --- | --- | --- |
 | Overlay workflow expectations | `AGENTS.md` → “Workflow primer” | Mirrors the main repo’s contract; highlights overlay-specific gates and coordination rules. |
-| Build & packaging steps | `docs/LLM_TROUBLESHOOTING_GUIDE.md` (main repo) → “Verification Matrix” | Use the matrix to pick relevant checks; add helper/overlay build commands as they come online. |
+| Build & packaging steps | `docs/LLM_TROUBLESHOOTING_GUIDE.md` (this repo) → “Build & verification recipes” | Overlay-specific commands plus quick smoke checklist. |
 | Cloudflare/web integration touchpoints | `EF-Map-main/docs/CLI_WORKFLOWS.md` | Provides Wrangler-centric flows that inform how overlay payload endpoints are validated. |
 | Roadmap synchronization | `docs/initiatives/GAME_OVERLAY_PLAN.md` → “Sync checklist” | Ensures both repositories stay aligned when milestones shift. |
 | Decision logging | `docs/decision-log.md` + main repo log | Record overlay decisions and cross-link to EF-Map-main entries when shared components move. |
@@ -31,7 +31,7 @@ For the combined guardrails that apply to both repos, cross-reference `EF-Map-ma
 - Helper app (Windows tray/service) manages protocol handling, overlay injection, and configuration files.
 - Overlay DLL (DX12) hooks the swap chain present call to render UI (ImGui prototype or texture stream).
 - Local bridge communicates with the EF-Map web app via custom protocol `ef-overlay://` and localhost HTTP endpoints.
-- Packaging (MSI/MSIX) signs binaries and distributes updates; long-term updater strategy tracked in the initiative plan.
+- Packaging (MSI/MSIX) signs binaries and distributes updates; long-term updater strategy tracked in the initiative plan (current lean: Microsoft Azure Code Signing).
 - The EF-Map web app provides payloads (route data, overlays) via existing APIs—changes to those APIs stay in `EF-Map-main`.
 
 ## Key Folders / Files (expected)
@@ -57,6 +57,7 @@ For the combined guardrails that apply to both repos, cross-reference `EF-Map-ma
 - API or payload changes: update `EF-Map-main` first (or in tandem) and document handshake versions.
 - Shared docs: when updating guardrails or the overlay plan, reflect the change in both repositories.
 - Decision logs: reference the companion entry in the other repo when actions span both (use ISO date + short title).
+- Flag substantive troubleshooting updates in `docs/LLM_TROUBLESHOOTING_GUIDE.md` and mirror any cross-repo implications.
 
 ### Response Framing
 - Follow the same GPT-5 Codex workflow as the main repo: purposeful preamble, todo list management, delta updates, quality gates.
@@ -67,6 +68,7 @@ For the combined guardrails that apply to both repos, cross-reference `EF-Map-ma
 - Run unit/integration tests when implemented (document coverage expectations in this file once available).
 - Manual smoke: verify overlay attach/detach, latency, and no crash in both windowed and fullscreen modes.
 - Security: confirm protocol handlers require trusted origins / session tokens before enabling.
+- Operational note: Start the helper from an external PowerShell window (outside VS Code) and inject using the stable process name `exefile.exe` so smoke runs don’t break on PID changes.
 
 ### Decision Log Template (reuse)
 `## YYYY-MM-DD – <Title>`

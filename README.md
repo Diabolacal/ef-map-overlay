@@ -8,8 +8,33 @@ This repository contains the native helper application and DirectX 12 overlay co
 ### Key docs
 - `AGENTS.md` – condensed guardrails for agents working in this repo.
 - `.github/copilot-instructions.md` – detailed workflow expectations and architecture notes.
+- `docs/LLM_TROUBLESHOOTING_GUIDE.md` – first-stop orientation and troubleshooting map for this project.
 - `docs/initiatives/GAME_OVERLAY_PLAN.md` – roadmap for the overlay initiative (mirrors the copy in `EF-Map-main`).
 - `docs/decision-log.md` – overlay-specific decision history.
+
+### Current status (2025-10-15)
+- ✅ **Follow mode shipped:** the helper now streams the pilot’s current system into EF Map; toggles stay in sync across helper, overlay, and browser surfaces.
+- 🟡 **Mining telemetry in validation:** yield parsing, rolling-rate calculations, and first-pass overlay widgets are implemented and being tuned using live sessions.
+- ⏸️ **3D star map replication paused:** native starfield work is shelved while telemetry and combat tooling take priority.
+
+Refer to `docs/initiatives/GAME_OVERLAY_PLAN.md` for a detailed breakdown of phase status and acceptance criteria.
+
+### Roadmap snapshot
+| Phase | Status | Highlights |
+| --- | --- | --- |
+| 1 – Helper ↔ UI grounding | ✅ Complete | Tray/runtime polish, helper state bridge, follow-mode toggles across surfaces. |
+| 2 – Mining telemetry foundation | 🟡 Validation | Live log parsing, session graphs, reset controls, local-only storage. |
+| 3 – Combat telemetry | ⏳ Queued | Extend log pipeline to DPS/events with privacy safeguards. |
+| 4 – Follow mode | ✅ Complete | System streaming between helper and web app; recentering works in live play. |
+| 5 – Bookmark & route UX | ⏳ Pending design | Overlay bookmark actions and next-system callouts. |
+| 6 – Packaging & release | ⏳ Planning | Signed installer workflow, helper tray UX, update channel. |
+
+### Helper packaging & signing (preview)
+- Target installer tech: WiX MSI vs MSIX vs Squirrel under evaluation; current lean is to adopt **Microsoft Azure Code Signing (ACS)** to streamline Authenticode signatures.
+- Signed binaries are required before broad distribution; store certificates securely (HSM-backed or ACS key vault) and document access procedures in the decision log when finalized.
+- Plan to host versioned installers on Cloudflare (R2 + Pages Worker) and surface download links inside the EF helper panel once ready.
+
+Packaging tasks remain part of the Phase 6 backlog; contributions should align with the roadmap and document any environment prerequisites.
 
 ### Project structure
 - `src/helper/` – Windows helper/tray app skeleton (protocol registration, process attach, logging).
@@ -63,7 +88,7 @@ Use the `ef-overlay-injector.exe` utility to load the overlay DLL into a running
 cmake --build build --config Release
 ```
 
-2. Launch `ef-overlay-helper.exe` (Release build) in a separate terminal. Leave it running so the overlay module can read shared state:
+2. Launch `ef-overlay-helper.exe` (Release build) in a separate **external** PowerShell window (outside VS Code). The helper must run in a standalone console to bind correctly; the integrated terminal routinely blocks injection. Leave it running so the overlay module can read shared state:
 
 ```powershell
 cd build/src/helper/Release
@@ -84,13 +109,13 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:38765/overlay/state -Body $
 
 4. Start the EVE Frontier client (windowed mode is easiest for observation).
 
-5. Identify the process name or PID. The retail EVE Frontier client runs as **`exefile.exe`**; the following command lists any active instances (adjust if CCP renames the binary in a future build):
+5. Identify the process by name—stick with **`exefile.exe`**. The retail EVE Frontier client keeps this name across launches, while the PID changes every session. Use the following command to confirm it is running (adjust only if CCP renames the binary in a future build):
 
 ```powershell
 Get-Process -Name exefile -ErrorAction SilentlyContinue | Select-Object Id, ProcessName
 ```
 
-6. Inject the overlay DLL using the injector. Provide either the process name (`exefile.exe`) or the specific PID and the absolute path to the freshly built `ef-overlay.dll`:
+6. Inject the overlay DLL using the injector. Prefer the process name (`exefile.exe`) rather than a PID so the command stays valid across launches; supply the absolute path to the freshly built `ef-overlay.dll`:
 
 ```powershell
 cd C:/ef-map-overlay/build/src/injector/Release

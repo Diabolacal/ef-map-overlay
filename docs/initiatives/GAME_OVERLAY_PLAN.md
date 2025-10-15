@@ -43,48 +43,51 @@
 - **Custom protocol** `ef-overlay://attach?session=<token>` for explicit actions from the browser.
 - **Local HTTP API** `http://127.0.0.1:<port>/status`, `/attach`, `/dismiss` for health checks and richer commands.
 
-## 6. Progress Summary (2025-10-13)
+## 6. Progress Summary (2025-10-15)
 - ✅ **Helper + injector MVP** – C++ helper boots, exposes HTTP API, launches overlay smoke script, injects DX12 module with hotkey toggle.
 - ✅ **DX12 overlay hook** – Swap-chain hook renders ImGui window, handles input capture (F8 toggle, drag/move, edge resize) without impacting gameplay.
 - ✅ **Automation** – PowerShell smoke script coordinates helper launch, payload post, and DLL injection for quick manual validation.
 - ✅ **Overlay state v2 schema + event queue** – Shared-memory schema updated with player marker, highlights, camera pose, HUD hints, follow flag; overlay ↔ helper event ring buffer published via shared memory + HTTP drain endpoint for testing.
 - ✅ **Log watcher groundwork** – Existing local-chat parser already resolves system IDs from rotating gamelogs; helper reports log locations for diagnostics.
 - ✅ **EF helper panel preview** – Web app now surfaces a helper panel and Pages preview for validating status flows before production deployment.
-- ⏸️ **Native starfield renderer polish** – Camera-aligned renderer exists but visual tuning is paused after artifact investigation; resume once helper-first backlog lands.
+- ✅ **Live follow mode bridge** – Helper now streams the player’s current system to the web app; follow toggles stay in sync and recenter EF Map automatically.
+- 🟡 **Mining telemetry UI pass** – Yield parsing, rate aggregation, and first overlay widgets are implemented and undergoing final validation with live sessions.
+- ⏸️ **Native starfield renderer polish** – Camera-aligned renderer exists but visual tuning is paused after artifact investigation; revisit after telemetry polish.
+- ⏸️ **3D starmap replication** – Deprioritized in favor of telemetry and combat tooling; no near-term milestones scheduled.
 - ▢ **Installer & signing** – Deferred until we stabilize feature set; helper currently launched manually.
 - ▢ **Browser CTA** – Web → helper bridge still manual; custom protocol & detection flow to be designed.
 
 ## 7. Roadmap (Q4 2025)
 The helper, overlay, and EF map web panel will continue to evolve together. All gameplay telemetry stays on the pilot’s machine; Cloudflare usage metrics remain lightweight and limited to helper adoption counters (e.g., connected sessions).
 
-### Phase 1 – Helper ↔ UI grounding *(active)*
-- Validate end-to-end helper state reporting across the local helper, overlay HUD, and EF helper panel.
-- Expose an opt-in “Follow current system” toggle in both the helper UI and the web panel (disabled until data flow is confirmed).
-- Tighten the existing tray/runtime UX so operators can launch the helper without console windows.
+### ✅ Phase 1 – Helper ↔ UI grounding
+- Validated helper state reporting across the local helper, overlay HUD, and EF helper panel.
+- Delivered synchronized follow-mode toggles and system recentering between helper and web app.
+- Hardened tray/runtime UX so operators can launch the helper without stray console windows.
 
 **Validation:** helper status transitions display correctly in the Pages preview; usage counters increment in `/api/stats`; tray diagnostics show log paths and last update timestamps.
 
-### Phase 2 – Mining telemetry foundation
+### 🟡 Phase 2 – Mining telemetry foundation *(validation)*
 - Extend the log watcher to accumulate mining yield totals and rolling rates (per ore type) using the real game logs—no synthetic fixtures required.
 - Surface graphs in the helper window and overlay HUD, with a session reset control.
 - Keep telemetry local; only aggregate adoption metrics (helper connected) are reported to Cloudflare for health tracking.
 
-**Validation:** live mining sessions update graphs in both helper and overlay; reset clears session totals; smoke script confirms no FPS regressions.
+**Validation target:** live mining sessions update graphs in both helper and overlay; reset clears session totals; smoke script confirms no FPS regressions.
 
-### Phase 3 – Combat telemetry
+### Phase 3 – Combat telemetry *(queued)*
 - Reuse the mining pipeline to track DPS in/out and combat events.
 - Provide configurable charts and peak indicators in helper/overlay UIs.
 - Reconfirm privacy posture (local-only) and reuse minimal usage metrics.
 
 **Validation:** live combat logs update HUD charts; helper diagnostics show recent event counts; overlay remains stable.
 
-### Phase 4 – Live location follow mode
-- Use the existing chat parser to keep EF Map centered on the pilot’s current system with a distinct highlight.
-- Provide synchronized toggles in helper, overlay, and web app to enable/disable follow mode and temporarily suspend on user interaction.
+### ✅ Phase 4 – Live location follow mode
+- Follow mode now streams the pilot’s current system from the helper into EF Map, recentering automatically.
+- Toggles remain in sync across helper, overlay, and web UI; temporary user interaction pauses are honored.
 
-**Validation:** jumping between systems recenters the map until the user interacts; toggles stay in sync across surfaces.
+**Validation:** system jumps recentre the map; toggles propagate state within one heartbeat; manual interaction resumes control without breaking sync.
 
-### Phase 5 – Bookmark & route enhancements
+### Phase 5 – Bookmark & route enhancements *(pending design)*
 - Add an in-game overlay action to create EF Map bookmarks (local helper persists until a remote storage decision is made).
 - Display the “next system” in the active route within the overlay (read-only; route export stays manual via notes).
 
@@ -94,7 +97,7 @@ The helper, overlay, and EF map web panel will continue to evolve together. All 
 - Harden the helper tray experience, bundle with an installer, and update download CTA/links inside the EF helper panel.
 - Document installation and smoke steps in both repos; sign binaries when feature set stabilizes.
 - Stand up a signed installer workflow:
-	- Choose installer tech (WiX MSI vs MSIX vs Squirrel) and wire into overlay CI.
+	- Choose installer tech (WiX MSI vs MSIX vs Squirrel) and wire into overlay CI (current lean: Microsoft Store signing pipeline via Azure Code Signing).
 	- Acquire and store Authenticode cert securely; sign helper binaries + installer artifacts.
 	- Host versioned installers on Cloudflare (R2 + Pages Worker) with HTTPS download links surfaced in the helper panel.
 - Convert the helper into a tray-first runtime:

@@ -15,8 +15,15 @@ Purpose: Guardrails for agents working in the dedicated game-overlay repository 
 
 Useful entry points:
 - Guardrails & workflow: `.github/copilot-instructions.md` (this repo) and `EF-Map-main/.github/copilot-instructions.md` for the web app.
+- Troubleshooting guide: `docs/LLM_TROUBLESHOOTING_GUIDE.md` (overlay-first orientation and playbooks).
 - Initiative plan: `docs/initiatives/GAME_OVERLAY_PLAN.md` (mirrors the plan tracked in the main repo).
 - Decision history: `docs/decision-log.md` (overlay-specific). For broader EF-Map history, read `EF-Map-main/docs/decision-log.md`.
+
+Current status snapshot (2025-10-15):
+- Follow mode sync is live across helper, overlay, and EF Map surfaces.
+- Mining telemetry widgets exist and are in validation using live sessions.
+- Native 3D star map rendering is paused while telemetry + combat tooling take priority.
+- Installer/signing work is queued for Phase 6, leaning toward Microsoft Azure Code Signing.
 
 ## Coordination with EF-Map-main
 1. Treat the web app as the authoritative producer of overlay data payloads. Do not modify web app behavior from this repo; request changes in `EF-Map-main`.
@@ -28,6 +35,7 @@ Useful entry points:
 - DX12 overlay rendering: Validate on both windowed and fullscreen modes before marking tasks complete.
 - Localhost bridge: Use signed requests / short-lived tokens; note any security-sensitive changes in the decision log.
 - Installer pipeline: Include signing + packaging verification steps and note certificate usage.
+- Smoke testing note: Launch `ef-overlay-helper.exe` from an external PowerShell window (not the VS Code terminal) and target the game process by name (`exefile.exe`) to avoid PID churn.
 
 ## High-risk surfaces (coordinate before changing)
 - **Process injection & DX12 hook** – Files under `src/overlay/` that touch swap-chain hooks or input routing; mistakes can crash the game client. Keep smoke script handy for validation.

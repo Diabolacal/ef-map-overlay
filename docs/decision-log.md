@@ -5,6 +5,14 @@
 - Gates: build ✅ (`cmake --build build --config RelWithDebInfo`).
 - Follow-ups: Capture in-game screenshots to confirm the focused transparency still reads correctly across bright backgrounds.
 
+- Goal: Capture the latest roadmap status (follow mode shipped, mining telemetry validating, star map on hold), expand the README with a roadmap snapshot + Azure signing lean, add an overlay-specific troubleshooting guide wired into guardrail docs, and reinforce smoke-test guidance (external PowerShell helper launch, inject via `exefile.exe`).
+- Files: `docs/initiatives/GAME_OVERLAY_PLAN.md`, `README.md`, `docs/LLM_TROUBLESHOOTING_GUIDE.md`, `AGENTS.md`, `.github/copilot-instructions.md`.
+- Diff: ~+320 / −40 (progress summary + phase status, README status table, new troubleshooting guide, guardrail references, smoke-test notes).
+- Risk: low (documentation only).
+- Gates: build n/a | tests n/a | smoke n/a.
+- Cross-repo: Mirror the plan and guardrail references in `EF-Map-main` (pending next docs sync).
+- Follow-ups: Update `EF-Map-main/docs/initiatives/GAME_OVERLAY_PLAN.md` plus guardrail docs with matching language and revisit the troubleshooting guide after mining telemetry ships.
+
 ## 2025-10-14 – Overlay renderer lifecycle restore & telemetry reset helper
 - Goal: Reintroduce the renderer scaffolding lost during the mining sparkline refactor, restore the mining history constants, and route the telemetry reset button through a dedicated helper so the overlay builds again.
 - Files: `src/overlay/overlay_renderer.cpp`, `src/overlay/overlay_renderer.hpp`.
