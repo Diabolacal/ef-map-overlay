@@ -1,6 +1,16 @@
+## 2025-10-22 – Comprehensive overlay architecture documentation
+- Goal: Create technical reference document explaining overlay system architecture, IPC mechanisms, browser communication patterns, and adaptation guide for reuse by other EVE Frontier DApps (requested by colleague).
+- Files: `docs/OVERLAY_ARCHITECTURE.md` (new).
+- Diff: ~+650 / −0 (architecture diagrams, component breakdown, schema reference, IPC deep-dive, browser bridge patterns, build instructions, troubleshooting, adaptation guide).
+- Risk: low (documentation only).
+- Gates: build n/a | tests n/a | smoke n/a.
+- Cross-repo: None (overlay-specific documentation; browser integration patterns reference EF-Map-main).
+- Follow-ups: Update when schema bumps to v5, add packaging/distribution sections once Phase 6 lands, mirror key sections in README for discoverability.
+
+## 2025-10-15 – Orange HUD palette restoration
 - Goal: Bring back the warm orange HUD palette and sparkline tint while keeping the base window glass dark and transparent to match the EVE Frontier UI.
 - Files: `src/overlay/overlay_renderer.cpp`.
-- Diff: ~+50 / −50 (color constants, accent/resize grip palette, ellipsis tint + ordering, glass transparency tweak, brighter orange match, sparkline inherits focus alpha).
+- Diff: ~+50 / −50 (color constants, accent/resize grip palette, ellipsis tint + ordering, glass transparency tweak, brighter orange match, sparkline inherits focus alpha).
 - Risk: low (styling only).
 - Gates: build ✅ (`cmake --build build --config RelWithDebInfo`).
 - Follow-ups: Capture in-game screenshots to confirm the focused transparency still reads correctly across bright backgrounds.
