@@ -1,3 +1,38 @@
+## 2025-10-23 – Increase mining decay hold period for large laser compatibility
+- Goal: Prevent jaggy sparkline when players use large mining lasers (6-second cycle time) by extending the hold period before decay starts.
+- Files: `src/overlay/overlay_renderer.cpp`, `docs/LLM_TROUBLESHOOTING_GUIDE.md`.
+- Change: Increased `kMiningCycleMs` from 4000ms (4s) to 7000ms (7s) to accommodate 6s large laser activation cycle plus 1s safety margin.
+- Rationale:
+  - Current 4s hold works for standard lasers (4s cycle) but would cause premature decay with large lasers (6s cycle).
+  - With 4s hold + 6s laser cycle: decay would start at T+4s, new event arrives at T+6s → sawtooth pattern.
+  - With 7s hold + 6s laser cycle: full cycle covered, smooth behavior maintained.
+  - Safety margin (+1s) accounts for network latency, log write delays, and frame timing variations.
+- Impact: 
+  - Small lasers (4s): Extra 3s hold is imperceptible, maintains smooth appearance.
+  - Large lasers (6s): Full cycle coverage prevents premature decay.
+  - Total decay: Still 10s window (7s hold + 3s linear decay to zero).
+- Diff: ~+3 / −2 (constant update + documentation).
+- Risk: low (timing adjustment only, no behavioral changes for existing 4s lasers).
+- Gates: build pending | tests ⚪ (manual validation) | smoke pending (test with 4s lasers to confirm no regression).
+- Cross-repo: None (overlay-only timing constant).
+- Follow-ups: Test with actual large mining lasers when available (est. 2-3 months); monitor for any edge cases.
+
+## 2025-10-23 – Mining sparkline EMA smoothing & session persistence finalization
+- Goal: Eliminate sparkline jitter during active mining and ensure session totals persist correctly across helper restarts and combat log file switches.
+- Files: `src/overlay/overlay_renderer.cpp` (EMA smoothing), `src/helper/log_watcher.cpp` (session restore).
+- Approach:
+  - **EMA smoothing (α=0.3):** Applied to local copy of rate values before rendering to produce smooth oscilloscope-like curves during mining. Original persistent array untouched to preserve raw data.
+  - **Session persistence fix:** Added `restoreSession()` call in `refreshCombatFile()` to reload `totalVolume_` and `sessionStart_` after aggregator reset, ensuring accumulation continues from saved state.
+  - **Decay visualization:** Rejected synthetic decay sample generation (Option 2) after it broke active mining sparklines by blocking new samples. Kept interpolation-based decay (Option 1): smooth 10s decay rendered via lambda, transitions to accurate vertical drop after scrolling left.
+- Diff: ~+40 / −15 (EMA loop in renderer, restore call in log watcher, removed Option 2 experimental code).
+- Risk: medium (affects live mining display + persistence logic).
+- Gates: build ✅ | tests ⚪ (manual validation only) | smoke ✅ (live mining sessions confirmed smooth curves, session persistence working, decay accurate).
+- Decision rationale: 
+  - Option 1 (interpolation-based decay) chosen over Option 2 (synthetic samples) because Option 2 inadvertently blocked regular sample updates during mining, causing sparkline to flatline. Option 1 provides factually accurate visualization (instant stop → vertical drop after scrolling) without side effects.
+  - EMA smoothing eliminates high-frequency jitter while preserving peak information and session totals.
+- Cross-repo: None (overlay-only changes).
+- Follow-ups: Document EMA smoothing and decay behavior in LLM troubleshooting guide; monitor for any edge cases with rapid start/stop cycles.
+
 ## 2025-10-22 – Comprehensive overlay architecture documentation
 - Goal: Create technical reference document explaining overlay system architecture, IPC mechanisms, browser communication patterns, and adaptation guide for reuse by other EVE Frontier DApps (requested by colleague).
 - Files: `docs/OVERLAY_ARCHITECTURE.md` (new).

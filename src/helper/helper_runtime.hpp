@@ -79,6 +79,8 @@ public:
     bool postSampleOverlayState();
     bool injectOverlay(const std::wstring& processName = L"exefile.exe");
     std::optional<helper::logs::TelemetrySummary> resetTelemetrySession();
+    void saveMiningSession();
+    void loadMiningSession();
 
     HelperServer& server() noexcept { return server_; }
     const HelperServer& server() const noexcept { return server_; }

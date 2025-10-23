@@ -438,6 +438,37 @@ void OverlayRenderer::renderImGui()
     }
 
     const std::uint64_t nowMsValue = now_ms();
+    
+    // Apply exponential moving average for smooth curves (α=0.3)
+    // This makes mining curves smooth while preserving actual data points
+    if (miningRateValuesCopy.size() > 1)
+    {
+        constexpr float alpha = 0.3f;  // EMA smoothing factor (0.3 = responsive but smooth)
+        float emaValue = miningRateValuesCopy[0].rate;
+        
+        for (size_t i = 1; i < miningRateValuesCopy.size(); ++i)
+        {
+            // EMA formula: EMA_new = α * value_new + (1 - α) * EMA_old
+            emaValue = alpha * miningRateValuesCopy[i].rate + (1.0f - alpha) * emaValue;
+            miningRateValuesCopy[i].rate = emaValue;
+        }
+    }
+    
+    // Save decay parameters for rendering interpolation
+    std::uint64_t lastMiningEventMs = 0;
+    std::uint64_t lastRealSampleMs = 0;
+    float lastRealSampleRate = 0.0f;
+    
+    if (stateCopy && stateCopy->telemetry && stateCopy->telemetry->mining.has_value())
+    {
+        lastMiningEventMs = stateCopy->telemetry->mining->last_event_ms;
+    }
+    
+    if (!miningRateValuesCopy.empty())
+    {
+        lastRealSampleMs = miningRateValuesCopy.back().timestampMs;
+        lastRealSampleRate = miningRateValuesCopy.back().rate;
+    }
 
     if (!eventWriterReady_.load())
     {
@@ -644,13 +675,34 @@ void OverlayRenderer::renderImGui()
         };
 
         auto renderMiningTab = [&]() {
-            if (!telemetry || !telemetry->mining.has_value())
+            // Always show the UI structure, even if no data yet
+            const bool hasTelemetry = telemetry && telemetry->mining.has_value();
+            
+            if (!hasTelemetry)
             {
                 ImGui::Spacing();
-                ImGui::TextDisabled("No mining telemetry yet. Begin mining to populate this tab.");
+                ImGui::Separator();
+                ImGui::Text("Mining totals: 0.0 m3");
+                ImGui::Spacing();
+                ImGui::TextDisabled("Recent rate (m3/min)");
+                
+                // Show empty sparkline container
+                const float sparklineHeight = 72.0f;
+                const float sparklineWidth = std::max(180.0f, ImGui::GetContentRegionAvail().x);
+                ImVec2 sparkPos = ImGui::GetCursorScreenPos();
+                ImVec2 sparkMax = ImVec2(sparkPos.x + sparklineWidth, sparkPos.y + sparklineHeight);
+                
+                const float sparkAlpha = windowFocused ? kWindowBgFocused.w : kWindowBgUnfocused.w;
+                ImVec4 sparkBackground = kMiningGraphBackgroundBase;
+                sparkBackground.w = sparkAlpha;
+                drawList->AddRectFilled(sparkPos, sparkMax, ImGui::ColorConvertFloat4ToU32(sparkBackground), 5.0f);
+                
+                ImGui::Dummy(ImVec2(sparklineWidth, sparklineHeight));
+                ImGui::Spacing();
+                ImGui::TextDisabled("Begin mining to populate telemetry data.");
                 return;
             }
-
+            
             const overlay::MiningTelemetry& mining = *telemetry->mining;
 
             ImGui::Separator();
@@ -662,10 +714,6 @@ void OverlayRenderer::renderImGui()
                         mining.recent_window_seconds,
                         mining.recent_volume_m3);
             }
-            else
-            {
-                ImGui::TextDisabled("Recent mining window unavailable");
-            }
 
             if (mining.session_duration_seconds > 0.0)
             {
@@ -676,10 +724,6 @@ void OverlayRenderer::renderImGui()
                     sinceStartMinutes = static_cast<double>(nowMsValue - mining.session_start_ms) / 60000.0;
                 }
                 ImGui::TextDisabled("Session %.1f min (started %.1f min ago)", sessionMinutes, sinceStartMinutes);
-            }
-            else
-            {
-                ImGui::TextDisabled("Session has not started yet");
             }
 
             ImGui::Spacing();
@@ -769,10 +813,51 @@ void OverlayRenderer::renderImGui()
                 maxAgeMsForHover = std::min<float>(windowMsF, static_cast<float>(maxAgeMs));
 
                 auto interpolateRateAt = [&](std::uint64_t timestamp) -> float {
+                    // FIRST: Check if this timestamp is more than 10s after last MINING EVENT
+                    // This ensures we return zero for ALL historical rendering after mining stops
+                    if (lastMiningEventMs > 0 && timestamp > (lastMiningEventMs + 10000))
+                    {
+                        return 0.0f;
+                    }
+                    
                     if (timestamp <= workingPoints.front().timestampMs)
                     {
                         return workingPoints.front().rate;
                     }
+                    
+                    // Check if we're past the last real sample - apply decay ONLY if mining has stopped
+                    // (detected by checking if last mining event is older than the last sample)
+                    const bool miningHasStopped = lastMiningEventMs > 0 && 
+                                                  lastRealSampleMs > 0 && 
+                                                  lastMiningEventMs < lastRealSampleMs;
+                    
+                    if (miningHasStopped && timestamp > lastRealSampleMs)
+                    {
+                        constexpr std::uint64_t kMiningCycleMs = 7000;   // 7s hold (6s large laser cycle + 1s margin)
+                        constexpr std::uint64_t kDecayWindowMs = 10000;  // Total 10s window (7s hold + 3s decay)
+                        
+                        const std::uint64_t timeSinceLast = timestamp - lastRealSampleMs;
+                        
+                        // If within one laser cycle, hold at last rate
+                        if (timeSinceLast <= kMiningCycleMs)
+                        {
+                            return lastRealSampleRate;
+                        }
+                        // If in decay window, linearly decay to zero
+                        else if (timeSinceLast < kDecayWindowMs)
+                        {
+                            const std::uint64_t decayDuration = timeSinceLast - kMiningCycleMs;
+                            const std::uint64_t decayWindow = kDecayWindowMs - kMiningCycleMs;
+                            const float decayFactor = 1.0f - (static_cast<float>(decayDuration) / static_cast<float>(decayWindow));
+                            return lastRealSampleRate * decayFactor;
+                        }
+                        // Past decay window - return zero
+                        else
+                        {
+                            return 0.0f;
+                        }
+                    }
+                    
                     if (timestamp >= workingPoints.back().timestampMs)
                     {
                         return workingPoints.back().rate;
@@ -804,8 +889,12 @@ void OverlayRenderer::renderImGui()
                     return left.rate + fraction * (right.rate - left.rate);
                 };
 
-                const std::uint64_t anchorMs = latestTimestamp;
+                // Use current time as anchor so decay logic triggers when mining stops
+                const std::uint64_t anchorMs = now_ms();
                 const std::uint64_t sampleIntervalMs = 250;
+
+                // No smooth scroll offset needed - we're anchored to now
+                const float smoothScrollOffsetMs = 0.0f;
 
                 for (std::uint64_t ageMs = 0; ageMs <= maxAgeMs; ageMs += sampleIntervalMs)
                 {
@@ -837,9 +926,19 @@ void OverlayRenderer::renderImGui()
                 latestRate = plotSamples.front().rate;
 
                 linePoints.reserve(plotSamples.size());
-                for (const RatePlotSample& sample : plotSamples)
+                for (size_t i = 0; i < plotSamples.size(); ++i)
                 {
-                    const float normalizedTime = 1.0f - std::min(static_cast<float>(sample.ageMs) / windowMsF, 1.0f);
+                    const RatePlotSample& sample = plotSamples[i];
+                    
+                    // Only apply smooth scroll offset to historical data (not the head at t=0)
+                    // This keeps the latest point (orange dot) pinned to the right edge
+                    float effectiveAgeMs = static_cast<float>(sample.ageMs);
+                    if (sample.ageMs > 0)
+                    {
+                        effectiveAgeMs += smoothScrollOffsetMs;
+                    }
+                    
+                    const float normalizedTime = 1.0f - std::min(effectiveAgeMs / windowMsF, 1.0f);
                     const float x = leftX + normalizedTime * innerWidth;
                     const float normalizedRate = std::clamp(sample.rate / peakRate, 0.0f, 1.0f);
                     const float y = sparkMax.y - paddingY - normalizedRate * innerHeight;
@@ -943,11 +1042,24 @@ void OverlayRenderer::renderImGui()
                 bool resetInFlight = false;
                 bool lastSuccess = false;
                 std::string lastMessage;
+                std::uint64_t lastSuccessMs = 0;
                 {
                     std::lock_guard<std::mutex> lock(feedback.mutex);
                     resetInFlight = feedback.inFlight;
                     lastSuccess = feedback.lastSuccess;
                     lastMessage = feedback.message;
+                    lastSuccessMs = feedback.lastSuccessMs;
+
+                    // Clear message 3 seconds after successful reset
+                    if (lastSuccess && lastSuccessMs > 0)
+                    {
+                        const std::uint64_t currentMs = now_ms();
+                        if (currentMs > lastSuccessMs && (currentMs - lastSuccessMs) > 3000)
+                        {
+                            feedback.message.clear();
+                            lastMessage.clear();
+                        }
+                    }
                 }
 
                 ImGui::Separator();

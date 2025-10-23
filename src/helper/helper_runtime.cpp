@@ -2,6 +2,7 @@
 
 #include <windows.h>
 #include <tlhelp32.h>
+#include <shlobj.h>
 
 #include <cwctype>
 
@@ -14,6 +15,7 @@
 #include <sstream>
 #include <system_error>
 #include <cctype>
+#include <fstream>
 #include <nlohmann/json.hpp>
 
 namespace
@@ -249,6 +251,108 @@ namespace
 
         return payload;
     }
+
+    std::filesystem::path get_session_persistence_path()
+    {
+        PWSTR rawPath = nullptr;
+        std::filesystem::path result;
+        if (SUCCEEDED(::SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_CREATE, nullptr, &rawPath)))
+        {
+            result = std::filesystem::path(rawPath) / L"EFOverlay" / L"data";
+            ::CoTaskMemFree(rawPath);
+        }
+        else
+        {
+            result = std::filesystem::temp_directory_path() / L"EFOverlay" / L"data";
+        }
+
+        std::error_code ec;
+        std::filesystem::create_directories(result, ec);
+        return result / "mining_session.json";
+    }
+
+    void save_mining_session(const helper::logs::MiningTelemetrySnapshot& mining)
+    {
+        try
+        {
+            nlohmann::json j;
+            j["version"] = 1;
+            j["total_volume_m3"] = mining.totalVolumeM3;
+            j["session_start_ms"] = mining.sessionStartMs;
+            j["last_event_ms"] = mining.lastEventMs;
+            
+            nlohmann::json bucketsArray = nlohmann::json::array();
+            for (const auto& bucket : mining.buckets)
+            {
+                nlohmann::json bucketObj;
+                bucketObj["resource"] = bucket.resource;
+                bucketObj["session_total_m3"] = bucket.sessionTotalM3;
+                bucketsArray.push_back(bucketObj);
+            }
+            j["buckets"] = bucketsArray;
+
+            const auto path = get_session_persistence_path();
+            std::ofstream ofs(path);
+            if (ofs.is_open())
+            {
+                ofs << j.dump(2);
+                spdlog::debug("Saved mining session to {}", path.string());
+            }
+        }
+        catch (const std::exception& ex)
+        {
+            spdlog::warn("Failed to save mining session: {}", ex.what());
+        }
+    }
+
+    std::optional<helper::logs::MiningTelemetrySnapshot> load_mining_session()
+    {
+        try
+        {
+            const auto path = get_session_persistence_path();
+            if (!std::filesystem::exists(path))
+            {
+                spdlog::debug("No persisted mining session found at {}", path.string());
+                return std::nullopt;
+            }
+
+            std::ifstream ifs(path);
+            if (!ifs.is_open())
+            {
+                spdlog::warn("Could not open persisted session file: {}", path.string());
+                return std::nullopt;
+            }
+
+            nlohmann::json j;
+            ifs >> j;
+
+            helper::logs::MiningTelemetrySnapshot snapshot;
+            snapshot.totalVolumeM3 = j.value("total_volume_m3", 0.0);
+            snapshot.sessionStartMs = j.value("session_start_ms", static_cast<std::uint64_t>(0));
+            snapshot.lastEventMs = j.value("last_event_ms", static_cast<std::uint64_t>(0));
+            snapshot.recentWindowSeconds = 120.0;
+
+            if (j.contains("buckets") && j["buckets"].is_array())
+            {
+                for (const auto& bucketJson : j["buckets"])
+                {
+                    helper::logs::MiningBucketSnapshot bucket;
+                    bucket.resource = bucketJson.value("resource", "");
+                    bucket.sessionTotalM3 = bucketJson.value("session_total_m3", 0.0);
+                    snapshot.buckets.push_back(bucket);
+                }
+            }
+
+            spdlog::info("Loaded persisted mining session: {:.1f} m³ total, {} buckets", 
+                         snapshot.totalVolumeM3, snapshot.buckets.size());
+            return snapshot;
+        }
+        catch (const std::exception& ex)
+        {
+            spdlog::warn("Failed to load mining session: {}", ex.what());
+            return std::nullopt;
+        }
+    }
 }
 
 HelperRuntime::HelperRuntime(Config config)
@@ -343,14 +447,6 @@ bool HelperRuntime::start()
 
     server_.setTelemetryResetHandler([this]() -> std::optional<nlohmann::json> {
         if (!logWatcher_)
-
-    server_.setFollowModeProvider([this]() {
-        return followModeEnabled_.load();
-    });
-
-    server_.setFollowModeUpdateHandler([this](bool enabled) {
-        return applyFollowModeSetting(enabled, "http");
-    });
         {
             return std::nullopt;
         }
@@ -373,12 +469,28 @@ bool HelperRuntime::start()
         return response;
     });
 
+    server_.setFollowModeProvider([this]() {
+        return followModeEnabled_.load();
+    });
+
+    server_.setFollowModeUpdateHandler([this](bool enabled) {
+        return applyFollowModeSetting(enabled, "http");
+    });
+
+    // Restore persisted mining session BEFORE starting log processing
+    // This ensures session state is loaded before any new mining events are processed
+    loadMiningSession();
+
     logWatcher_->start();
     {
         std::lock_guard<std::mutex> guard(statusMutex_);
         lastLogWatcherStatus_ = logWatcher_->status();
         lastTelemetryResetAt_.reset();
     }
+
+    // Force publish the restored mining session AFTER LogWatcher has started
+    // This ensures the publish callback is registered and overlay sees the restored state
+    logWatcher_->forcePublish();
 
     loadStarCatalog();
 
@@ -611,6 +723,9 @@ bool HelperRuntime::injectOverlay(const std::wstring& processName)
 
 void HelperRuntime::eventPump()
 {
+    auto lastPersistTime = std::chrono::steady_clock::now();
+    constexpr auto kPersistInterval = std::chrono::seconds(30);
+    
     while (!stopRequested_.load())
     {
         if (auto drained = eventReader_.drain(); !drained.events.empty() || drained.dropped > 0)
@@ -646,9 +761,68 @@ void HelperRuntime::eventPump()
 
                     applyFollowModeSetting(desired, "event");
                 }
+                else if (event.type == overlay::OverlayEventType::CustomJson)
+                {
+                    if (!event.payload.empty())
+                    {
+                        try
+                        {
+                            const auto json = nlohmann::json::parse(event.payload);
+                            if (json.contains("action"))
+                            {
+                                const std::string action = json.at("action").get<std::string>();
+                                if (action == "telemetry_reset")
+                                {
+                                    spdlog::info("Received telemetry_reset event from overlay");
+                                    if (logWatcher_)
+                                    {
+                                        // Reset the session
+                                        logWatcher_->resetTelemetrySession();
+                                        
+                                        // Immediately delete persisted session file
+                                        try
+                                        {
+                                            const auto path = get_session_persistence_path();
+                                            if (std::filesystem::exists(path))
+                                            {
+                                                std::filesystem::remove(path);
+                                                spdlog::debug("Removed persisted session file after reset");
+                                            }
+                                        }
+                                        catch (const std::exception& ex)
+                                        {
+                                            spdlog::warn("Failed to remove persisted session file: {}", ex.what());
+                                        }
+                                        
+                                        // Force immediate state publish so overlay updates instantly
+                                        logWatcher_->forcePublish();
+                                        
+                                        spdlog::info("Telemetry session reset completed and published");
+                                    }
+                                    else
+                                    {
+                                        spdlog::warn("Cannot reset telemetry: logWatcher not initialized");
+                                    }
+                                }
+                            }
+                        }
+                        catch (const std::exception& ex)
+                        {
+                            spdlog::debug("Failed to parse CustomJson event payload: {}", ex.what());
+                        }
+                    }
+                }
             }
 
             server_.recordOverlayEvents(std::move(drained.events), drained.dropped);
+        }
+
+        // Periodically persist mining session
+        const auto now = std::chrono::steady_clock::now();
+        if (now - lastPersistTime >= kPersistInterval)
+        {
+            saveMiningSession();
+            lastPersistTime = now;
         }
 
         std::unique_lock<std::mutex> lock(eventMutex_);
@@ -878,7 +1052,63 @@ std::optional<helper::logs::TelemetrySummary> HelperRuntime::resetTelemetrySessi
     }
 
     spdlog::info("Telemetry session reset via helper runtime");
+    
+    // Delete persisted session after reset
+    try
+    {
+        const auto path = get_session_persistence_path();
+        if (std::filesystem::exists(path))
+        {
+            std::filesystem::remove(path);
+            spdlog::debug("Removed persisted session file after reset");
+        }
+    }
+    catch (const std::exception& ex)
+    {
+        spdlog::warn("Failed to remove persisted session file: {}", ex.what());
+    }
+    
     return summary;
+}
+
+void HelperRuntime::saveMiningSession()
+{
+    if (!logWatcher_)
+    {
+        return;
+    }
+
+    auto status = logWatcher_->status();
+    if (status.telemetry.mining.has_value() && status.telemetry.mining->hasData())
+    {
+        save_mining_session(*status.telemetry.mining);
+    }
+}
+
+void HelperRuntime::loadMiningSession()
+{
+    if (!logWatcher_)
+    {
+        spdlog::error("Cannot load mining session: LogWatcher not initialized");
+        return;
+    }
+    
+    auto persisted = load_mining_session();
+    if (persisted.has_value())
+    {
+        spdlog::info("Loaded persisted session: {:.1f} m3, {} buckets, sessionStart={}, lastEvent={}", 
+            persisted->totalVolumeM3, 
+            persisted->buckets.size(),
+            persisted->sessionStartMs,
+            persisted->lastEventMs);
+        
+        logWatcher_->restoreMiningSession(*persisted);
+        spdlog::info("Called restoreMiningSession() - session should be restored in LogWatcher");
+    }
+    else
+    {
+        spdlog::warn("No persisted mining session to restore (file doesn't exist or failed to parse)");
+    }
 }
 
 bool HelperRuntime::applyFollowModeSetting(bool enabled, std::string_view source)

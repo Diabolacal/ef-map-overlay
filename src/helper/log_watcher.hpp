@@ -139,6 +139,8 @@ namespace helper::logs
 
     TelemetrySummary telemetrySnapshot();
     TelemetrySummary resetTelemetrySession();
+    void restoreMiningSession(const MiningTelemetrySnapshot& persisted);
+    void forcePublish();
 
         void setFollowModeSupplier(FollowModeSupplier supplier);
 

@@ -217,6 +217,8 @@ namespace helper::logs
 
             prune(normalized.timestamp);
 
+            // Only set sessionStart_ if this is the FIRST event ever (not after restore)
+            // After restore, sessionStart_ is already set to the original session start time
             if (sessionStart_.time_since_epoch().count() == 0 && normalized.timestamp.time_since_epoch().count() != 0)
             {
                 sessionStart_ = normalized.timestamp;
@@ -321,6 +323,35 @@ namespace helper::logs
             lastEvent_ = std::chrono::system_clock::time_point{};
             sessionBuckets_.clear();
             sessionStart_ = std::chrono::system_clock::time_point{};
+        }
+
+        void restoreSession(const MiningTelemetrySnapshot& persisted)
+        {
+            // Restore session state from persisted snapshot
+            totalVolume_ = persisted.totalVolumeM3;
+            
+            if (persisted.sessionStartMs > 0)
+            {
+                sessionStart_ = std::chrono::system_clock::time_point{std::chrono::milliseconds(persisted.sessionStartMs)};
+            }
+            
+            if (persisted.lastEventMs > 0)
+            {
+                lastEvent_ = std::chrono::system_clock::time_point{std::chrono::milliseconds(persisted.lastEventMs)};
+            }
+            
+            // Restore bucket totals
+            sessionBuckets_.clear();
+            for (const auto& bucket : persisted.buckets)
+            {
+                if (bucket.sessionTotalM3 > 0.0)
+                {
+                    sessionBuckets_[bucket.resource] = bucket.sessionTotalM3;
+                }
+            }
+            
+            spdlog::info("Restored mining session: {:.1f} m³ total, {} ore types", 
+                         totalVolume_, sessionBuckets_.size());
         }
 
     private:
@@ -610,6 +641,16 @@ namespace helper::logs
                 publish |= processCombat();
 
                 snapshot = status_;
+                
+                // Debug logging to track mining data persistence
+                if (snapshot.telemetry.mining.has_value())
+                {
+                    spdlog::debug("Loop snapshot has mining data: {:.1f} m3", snapshot.telemetry.mining->totalVolumeM3);
+                }
+                else
+                {
+                    spdlog::warn("Loop snapshot MISSING mining data!");
+                }
             }
 
             if (statusCallback_)
@@ -736,6 +777,10 @@ namespace helper::logs
 
         if (combatTail_.path != *latest)
         {
+            // Preserve mining session data when switching combat log files
+            // Save both the snapshot and restore aggregator state to maintain session continuity
+            auto preservedMining = status_.telemetry.mining;
+            
             combatTail_.reset(*latest);
             status_.combatFile = *latest;
             status_.combat.emplace();
@@ -743,6 +788,16 @@ namespace helper::logs
             miningTelemetryAggregator_->reset();
             telemetryHistoryAggregator_->resetAll();
             status_.telemetry = TelemetrySummary{};
+            
+            // Restore mining session if it was set (from restoreMiningSession or previous state)
+            status_.telemetry.mining = preservedMining;
+            
+            // Also restore the aggregator's internal state so new events accumulate correctly
+            if (preservedMining.has_value())
+            {
+                miningTelemetryAggregator_->restoreSession(*preservedMining);
+            }
+            
             if (auto id = combat_log_character_id(latest->filename().string()))
             {
                 status_.combat->characterId = *id;
@@ -1430,6 +1485,62 @@ namespace helper::logs
 
         status_.telemetry = summary;
         return summary;
+    }
+
+    void LogWatcher::restoreMiningSession(const MiningTelemetrySnapshot& persisted)
+    {
+        std::lock_guard<std::mutex> guard(mutex_);
+        if (miningTelemetryAggregator_)
+        {
+            spdlog::info("LogWatcher::restoreMiningSession() - Restoring {:.1f} m3", persisted.totalVolumeM3);
+            
+            miningTelemetryAggregator_->restoreSession(persisted);
+            
+            // Update status with restored data
+            const auto now = std::chrono::system_clock::now();
+            status_.telemetry.mining = miningTelemetryAggregator_->snapshot(now);
+            
+            if (status_.telemetry.mining.has_value())
+            {
+                spdlog::info("After restore: status_.telemetry.mining has {:.1f} m3", 
+                    status_.telemetry.mining->totalVolumeM3);
+            }
+            else
+            {
+                spdlog::error("After restore: status_.telemetry.mining is EMPTY!");
+            }
+            
+            // Don't publish here - publishCallback_ isn't set yet since start() hasn't been called
+            // The caller (HelperRuntime) will call forcePublish() after start()
+        }
+        else
+        {
+            spdlog::error("Cannot restore mining session: miningTelemetryAggregator_ is null");
+        }
+    }
+
+    void LogWatcher::forcePublish()
+    {
+        std::lock_guard<std::mutex> guard(mutex_);
+        
+        spdlog::info("LogWatcher::forcePublish() called");
+        
+        if (status_.telemetry.mining.has_value())
+        {
+            spdlog::info("Before publish: mining has {:.1f} m3", status_.telemetry.mining->totalVolumeM3);
+        }
+        else
+        {
+            spdlog::warn("Before publish: mining is EMPTY!");
+        }
+        
+        // Don't regenerate snapshots - just publish what's already in status_
+        // This preserves restored session data that was set by restoreMiningSession()
+        
+        // Force publish the current state
+        publishStateIfNeeded(status_, true);
+        
+        spdlog::info("Forced state publish completed");
     }
 
     std::string LogWatcher::buildStatusNotes(const LogWatcherStatus& snapshot)

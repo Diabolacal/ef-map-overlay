@@ -50,8 +50,8 @@
 - ✅ **Overlay state v2 schema + event queue** – Shared-memory schema updated with player marker, highlights, camera pose, HUD hints, follow flag; overlay ↔ helper event ring buffer published via shared memory + HTTP drain endpoint for testing.
 - ✅ **Log watcher groundwork** – Existing local-chat parser already resolves system IDs from rotating gamelogs; helper reports log locations for diagnostics.
 - ✅ **EF helper panel preview** – Web app now surfaces a helper panel and Pages preview for validating status flows before production deployment.
-- ✅ **Live follow mode bridge** – Helper now streams the player’s current system to the web app; follow toggles stay in sync and recenter EF Map automatically.
-- 🟡 **Mining telemetry UI pass** – Yield parsing, rate aggregation, and first overlay widgets are implemented and undergoing final validation with live sessions.
+- ✅ **Live follow mode bridge** – Helper now streams the player's current system to the web app; follow toggles stay in sync and recenter EF Map automatically.
+- ✅ **Mining telemetry widgets** – Session persistence, rate calculation with EMA smoothing (α=0.3), and sparkline rendering validated with live mining sessions. Decay behavior uses interpolation for smooth curves.
 - ⏸️ **Native starfield renderer polish** – Camera-aligned renderer exists but visual tuning is paused after artifact investigation; revisit after telemetry polish.
 - ⏸️ **3D starmap replication** – Deprioritized in favor of telemetry and combat tooling; no near-term milestones scheduled.
 - ▢ **Installer & signing** – Deferred until we stabilize feature set; helper currently launched manually.
@@ -67,12 +67,15 @@ The helper, overlay, and EF map web panel will continue to evolve together. All 
 
 **Validation:** helper status transitions display correctly in the Pages preview; usage counters increment in `/api/stats`; tray diagnostics show log paths and last update timestamps.
 
-### 🟡 Phase 2 – Mining telemetry foundation *(validation)*
-- Extend the log watcher to accumulate mining yield totals and rolling rates (per ore type) using the real game logs—no synthetic fixtures required.
-- Surface graphs in the helper window and overlay HUD, with a session reset control.
-- Keep telemetry local; only aggregate adoption metrics (helper connected) are reported to Cloudflare for health tracking.
+### ✅ Phase 2 – Mining telemetry foundation *(complete)*
+- Extended log watcher to accumulate mining yield totals and rolling rates (per ore type) using real game logs.
+- Implemented session persistence via JSON (`%LocalAppData%\EFOverlay\data\mining_session.json`) with restore on helper restart.
+- Rate calculation uses 10-second rolling window with EMA smoothing (α=0.3) for stable, smooth sparkline curves during active mining.
+- Decay behavior after mining stops: computed via interpolation (4s hold + 6s linear decay to zero), displayed as vertical drop after scrolling left (accurate representation).
+- Surfaced graphs in helper window and overlay HUD with session reset control.
+- Telemetry remains local; only aggregate adoption metrics (helper connected) reported to Cloudflare.
 
-**Validation target:** live mining sessions update graphs in both helper and overlay; reset clears session totals; smoke script confirms no FPS regressions.
+**Validation complete:** live mining sessions update graphs smoothly; session totals persist across restarts; reset clears all data; sparkline shows clean curves without jitter.
 
 ### Phase 3 – Combat telemetry *(queued)*
 - Reuse the mining pipeline to track DPS in/out and combat events.
