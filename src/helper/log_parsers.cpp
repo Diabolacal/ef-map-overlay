@@ -319,6 +319,58 @@ namespace helper::logs
             return std::nullopt;
         }
 
+        // Handle miss events first (they don't have damage amounts)
+        if (lower.find("miss") != std::string::npos)
+        {
+            bool playerDealtMiss = false;
+            std::string counterpartyMiss;
+            
+            // Check for "you miss" or "your ... misses"
+            if (lower.find("you miss") != std::string::npos || lower.find("your ") != std::string::npos)
+            {
+                playerDealtMiss = true;
+                const auto youMissPos = lower.find("you miss ");
+                if (youMissPos != std::string::npos)
+                {
+                    // Extract target after "you miss"
+                    const auto targetStart = youMissPos + std::string("you miss ").size();
+                    counterpartyMiss = std::string(trim_view(strippedView.substr(targetStart)));
+                }
+                else
+                {
+                    // Look for "your ... misses ..."
+                    const auto yourPos = lower.find("your ");
+                    const auto missesPos = lower.find(" misses ", yourPos);
+                    if (missesPos != std::string::npos)
+                    {
+                        const auto targetStart = missesPos + std::string(" misses ").size();
+                        counterpartyMiss = std::string(trim_view(strippedView.substr(targetStart)));
+                    }
+                }
+            }
+            // Check for "X misses you" or "X's ... misses you"
+            else if (lower.find(" misses you") != std::string::npos || lower.find(" miss you") != std::string::npos)
+            {
+                playerDealtMiss = false;
+                const auto missYouPos = lower.find(" miss");  // Find start of " misses you" or " miss you"
+                if (missYouPos != std::string::npos)
+                {
+                    counterpartyMiss = std::string(trim_view(strippedView.substr(0, missYouPos)));
+                }
+            }
+            
+            if (!counterpartyMiss.empty())
+            {
+                CombatDamageEvent event;
+                event.playerDealt = playerDealtMiss;
+                event.amount = 0.0;  // Misses have no damage
+                event.counterparty = std::move(counterpartyMiss);
+                event.quality = HitQuality::Miss;
+                event.timestamp = timestamp;
+                return event;
+            }
+        }
+
         const auto cleanup_name = [](std::string_view name) {
             name = trim_view(name);
             const auto dash = name.find(" -");
@@ -495,17 +547,39 @@ namespace helper::logs
         }
 
         const auto amount = amountOpt.value_or(0.0);
-        if (amount <= 0.0)
+        
+        // Detect hit quality from keywords in the log line
+        HitQuality quality = HitQuality::Standard;
+        if (lower.find("miss") != std::string::npos)
         {
-            return std::nullopt;
+            quality = HitQuality::Miss;
         }
-
-        CombatDamageEvent event;
-        event.playerDealt = playerDealt;
-        event.amount = amount;
-        event.counterparty = std::move(counterparty);
-        event.timestamp = timestamp;
-        return event;
+        else if (lower.find("glanc") != std::string::npos)  // "glances off" or "glancing"
+        {
+            quality = HitQuality::Glancing;
+        }
+        else if (lower.find("penetrat") != std::string::npos)  // "penetrates" or "penetrating"
+        {
+            quality = HitQuality::Penetrating;
+        }
+        else if (lower.find("smash") != std::string::npos)  // "smashes" or "smashing"
+        {
+            quality = HitQuality::Smashing;
+        }
+        
+        // For misses, amount might be 0
+        if (quality == HitQuality::Miss || amount > 0.0)
+        {
+            CombatDamageEvent event;
+            event.playerDealt = playerDealt;
+            event.amount = amount;
+            event.counterparty = std::move(counterparty);
+            event.quality = quality;
+            event.timestamp = timestamp;
+            return event;
+        }
+        
+        return std::nullopt;
     }
 
     std::optional<MiningYieldEvent> parse_mining_yield_line(std::string_view line)

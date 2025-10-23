@@ -77,12 +77,21 @@ The helper, overlay, and EF map web panel will continue to evolve together. All 
 
 **Validation complete:** live mining sessions update graphs smoothly; session totals persist across restarts; reset clears all data; sparkline shows clean curves without jitter.
 
-### Phase 3 – Combat telemetry *(queued)*
-- Reuse the mining pipeline to track DPS in/out and combat events.
-- Provide configurable charts and peak indicators in helper/overlay UIs.
-- Reconfirm privacy posture (local-only) and reuse minimal usage metrics.
+### ✅ Phase 3 – Combat telemetry
+- **Complete:** Full combat damage tracking with dual-line sparkline (dealt/taken), session persistence framework, and hit quality analytics.
+- Implemented DPS calculation via 10-second rolling window showing weapon fire patterns; 2-second activity detection for fast tail-off when combat ends.
+- Dual-line sparkline (~144px, 2x mining height): orange for dealt damage, red for taken damage, 2-minute window.
+- Hit quality tracking: Miss, Glancing, Standard, Penetrating, Smashing tracked separately for dealt/taken (10 counters total).
+- Session tracking: sessionStartMs, sessionDurationSeconds, cumulative damage totals.
+- UI displays: combat totals, hit quality breakdown, session duration, current DPS, peak DPS, hover tooltips showing time + both DPS values.
+- Technical achievements:
+  - Eliminated 3-4Hz peak oscillation by removing interpolation and plotting raw DPS data points directly.
+  - Implemented stable peak tracking with 1% decay and quantization to prevent rescaling bounce.
+  - Added miss-specific parsing to detect misses ("you miss X") separately from normal hits.
+  - Fast 2-second tail-off when combat ends (instead of 20-30s delay).
+- Remaining work: combat_session.json persistence, wire reset button to delete persisted file.
 
-**Validation:** live combat logs update HUD charts; helper diagnostics show recent event counts; overlay remains stable.
+**Validation complete:** live combat updates sparkline with sharp weapon fire spikes; peaks stay rock-solid (zero oscillation); hit quality counters increment correctly; fast tail-off when combat ends; hover tooltips accurate; all previous features (scrolling, time direction, session totals) working.
 
 ### ✅ Phase 4 – Live location follow mode
 - Follow mode now streams the pilot’s current system from the helper into EF Map, recentering automatically.

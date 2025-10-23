@@ -123,13 +123,40 @@ namespace helper::logs
         {
             prune(event.timestamp);
             recent_.push_back(event);
+            
+            // Track session start on first event
+            if (sessionStart_.time_since_epoch().count() == 0 && event.timestamp.time_since_epoch().count() != 0)
+            {
+                sessionStart_ = event.timestamp;
+            }
+            
             if (event.playerDealt)
             {
                 totalDamageDealt_ += event.amount;
+                
+                // Increment hit quality counter (dealt)
+                switch (event.quality)
+                {
+                    case HitQuality::Miss:        ++missDealt_; break;
+                    case HitQuality::Glancing:    ++glancingDealt_; break;
+                    case HitQuality::Standard:    ++standardDealt_; break;
+                    case HitQuality::Penetrating: ++penetratingDealt_; break;
+                    case HitQuality::Smashing:    ++smashingDealt_; break;
+                }
             }
             else
             {
                 totalDamageTaken_ += event.amount;
+                
+                // Increment hit quality counter (taken)
+                switch (event.quality)
+                {
+                    case HitQuality::Miss:        ++missTaken_; break;
+                    case HitQuality::Glancing:    ++glancingTaken_; break;
+                    case HitQuality::Standard:    ++standardTaken_; break;
+                    case HitQuality::Penetrating: ++penetratingTaken_; break;
+                    case HitQuality::Smashing:    ++smashingTaken_; break;
+                }
             }
             lastEvent_ = event.timestamp;
         }
@@ -147,6 +174,33 @@ namespace helper::logs
             snapshot.totalDamageDealt = totalDamageDealt_;
             snapshot.totalDamageTaken = totalDamageTaken_;
             snapshot.recentWindowSeconds = static_cast<double>(window_.count());
+            
+            // Copy hit quality counters (dealt)
+            snapshot.missDealt = missDealt_;
+            snapshot.glancingDealt = glancingDealt_;
+            snapshot.standardDealt = standardDealt_;
+            snapshot.penetratingDealt = penetratingDealt_;
+            snapshot.smashingDealt = smashingDealt_;
+            
+            // Copy hit quality counters (taken)
+            snapshot.missTaken = missTaken_;
+            snapshot.glancingTaken = glancingTaken_;
+            snapshot.standardTaken = standardTaken_;
+            snapshot.penetratingTaken = penetratingTaken_;
+            snapshot.smashingTaken = smashingTaken_;
+            
+            if (sessionStart_.time_since_epoch().count() != 0)
+            {
+                snapshot.sessionStartMs = to_ms(sessionStart_);
+                
+                // Calculate session duration
+                if (now >= sessionStart_)
+                {
+                    const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(now - sessionStart_);
+                    snapshot.sessionDurationSeconds = static_cast<double>(duration.count()) / 1000.0;
+                }
+            }
+            
             if (lastEvent_.time_since_epoch().count() != 0)
             {
                 snapshot.lastEventMs = to_ms(lastEvent_);
@@ -182,6 +236,54 @@ namespace helper::logs
             totalDamageDealt_ = 0.0;
             totalDamageTaken_ = 0.0;
             lastEvent_ = std::chrono::system_clock::time_point{};
+            sessionStart_ = std::chrono::system_clock::time_point{};
+            
+            // Clear hit quality counters (dealt)
+            missDealt_ = 0;
+            glancingDealt_ = 0;
+            standardDealt_ = 0;
+            penetratingDealt_ = 0;
+            smashingDealt_ = 0;
+            
+            // Clear hit quality counters (taken)
+            missTaken_ = 0;
+            glancingTaken_ = 0;
+            standardTaken_ = 0;
+            penetratingTaken_ = 0;
+            smashingTaken_ = 0;
+        }
+
+        void restoreSession(const CombatTelemetrySnapshot& persisted)
+        {
+            totalDamageDealt_ = persisted.totalDamageDealt;
+            totalDamageTaken_ = persisted.totalDamageTaken;
+            
+            // Restore hit quality counters (dealt)
+            missDealt_ = persisted.missDealt;
+            glancingDealt_ = persisted.glancingDealt;
+            standardDealt_ = persisted.standardDealt;
+            penetratingDealt_ = persisted.penetratingDealt;
+            smashingDealt_ = persisted.smashingDealt;
+            
+            // Restore hit quality counters (taken)
+            missTaken_ = persisted.missTaken;
+            glancingTaken_ = persisted.glancingTaken;
+            standardTaken_ = persisted.standardTaken;
+            penetratingTaken_ = persisted.penetratingTaken;
+            smashingTaken_ = persisted.smashingTaken;
+            
+            if (persisted.sessionStartMs > 0)
+            {
+                sessionStart_ = std::chrono::system_clock::time_point{std::chrono::milliseconds(persisted.sessionStartMs)};
+            }
+            
+            if (persisted.lastEventMs > 0)
+            {
+                lastEvent_ = std::chrono::system_clock::time_point{std::chrono::milliseconds(persisted.lastEventMs)};
+            }
+            
+            spdlog::info("Restored combat session: {:.1f} dealt, {:.1f} taken", 
+                         totalDamageDealt_, totalDamageTaken_);
         }
 
     private:
@@ -199,6 +301,21 @@ namespace helper::logs
         double totalDamageTaken_{0.0};
         std::chrono::seconds window_{30};
         std::chrono::system_clock::time_point lastEvent_{};
+        std::chrono::system_clock::time_point sessionStart_{};
+        
+        // Hit quality counters (dealt)
+        std::uint64_t missDealt_{0};
+        std::uint64_t glancingDealt_{0};
+        std::uint64_t standardDealt_{0};
+        std::uint64_t penetratingDealt_{0};
+        std::uint64_t smashingDealt_{0};
+        
+        // Hit quality counters (taken)
+        std::uint64_t missTaken_{0};
+        std::uint64_t glancingTaken_{0};
+        std::uint64_t standardTaken_{0};
+        std::uint64_t penetratingTaken_{0};
+        std::uint64_t smashingTaken_{0};
     };
 
     class LogWatcher::MiningTelemetryAggregator
@@ -1352,6 +1469,23 @@ namespace helper::logs
                     payload.recent_damage_taken = combat.recentDamageTaken;
                     payload.recent_window_seconds = combat.recentWindowSeconds;
                     payload.last_event_ms = combat.lastEventMs;
+                    payload.session_start_ms = combat.sessionStartMs;
+                    payload.session_duration_seconds = combat.sessionDurationSeconds;
+                    
+                    // Hit quality counters (dealt)
+                    payload.miss_dealt = combat.missDealt;
+                    payload.glancing_dealt = combat.glancingDealt;
+                    payload.standard_dealt = combat.standardDealt;
+                    payload.penetrating_dealt = combat.penetratingDealt;
+                    payload.smashing_dealt = combat.smashingDealt;
+                    
+                    // Hit quality counters (taken)
+                    payload.miss_taken = combat.missTaken;
+                    payload.glancing_taken = combat.glancingTaken;
+                    payload.standard_taken = combat.standardTaken;
+                    payload.penetrating_taken = combat.penetratingTaken;
+                    payload.smashing_taken = combat.smashingTaken;
+                    
                     metrics.combat = payload;
                 }
             }

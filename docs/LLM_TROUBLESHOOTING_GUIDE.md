@@ -138,12 +138,112 @@ constexpr std::chrono::seconds kDefaultWindow{120};           // 120s recent vol
 - ✅ Restart helper → session totals persist, mining resumes from saved volume.
 - ✅ Reset session → totals clear, file deleted, new session starts fresh.
 
-## 8. Known gaps & follow-ups
-- Combat telemetry pipeline not started; watch for schema expansion.
-- Installer/signing work queued for Phase 6 (currently evaluating Azure Code Signing).
-- Need automated integration tests once mining telemetry stabilizes (track in decision log when scheduled).
+## 8. Combat telemetry implementation details
 
-## 8. Contact & escalation
+### Intent
+Provide real-time combat damage visualization with dual-line sparkline (dealt/taken), session persistence, hit quality analytics, and accurate representation of weapon fire patterns.
+
+### Architecture
+| Component | Role |
+| --- | --- |
+| Helper log watcher | Parses combat damage events from EVE Frontier combat logs, extracts amount, direction (dealt/taken), hit quality, counterparty. |
+| Telemetry aggregator | Maintains `totalDamageDealt`, `totalDamageTaken`, `sessionStart_`, hit quality counters (10 types) in memory; persists to `combat_session.json` (planned). |
+| Overlay renderer | Calculates rolling DPS from damage deltas, renders dual-line sparkline with stable peak tracking, displays hit quality breakdown. |
+
+### Data flow
+1. **Event capture:** Helper's `CombatLogFileWatcher` detects combat damage lines, parses player dealt/taken direction, damage amount, hit quality keywords.
+2. **Hit quality detection:** Parser checks for "miss", "glanc", "penetrat", "smash" keywords before normal damage extraction. Misses handled separately (different log patterns).
+3. **Aggregation:** `CombatTelemetryAggregator::add()` increments cumulative damage totals, updates hit quality counters, maintains 30s sliding window for recent damage.
+4. **DPS calculation:** `recordCombatDamageLocked()` computes DPS via 10-second rolling window: `dps = (damageNow - damageBaseline) / 10s`. Stores timestamped DPS values in deque.
+5. **Activity detection:** If total damage unchanged for 2 seconds, DPS drops to zero immediately (fast tail-off when combat ends).
+6. **Display:** Overlay plots raw DPS data points directly (no interpolation) as dual lines: orange (dealt), red (taken). X positions shift as time advances (smooth scrolling), Y values locked to stable data (zero oscillation).
+
+### Key decisions
+- **Dual-line sparkline (~144px):** 2x mining sparkline height for better combat visibility. Orange for dealt damage (positive), red for taken damage (danger signal).
+- **Raw data plotting (no interpolation):** Initially tried 250ms sampling + interpolation for smooth scrolling, but this caused 3-4Hz oscillation on sharp peaks due to synthetic values fluctuating frame-to-frame. Solution: plot actual `combatDamageValues_` data points directly, let ImGui's `AddPolyline` handle rendering. X positions shift smoothly, Y values stable → zero oscillation.
+- **Stable peak tracking:** `combatPeakDps_` persists across frames with 1% per second decay. Quantized to nearest 1.0 DPS and only updated every 100ms minimum to prevent rescaling bounce.
+- **2-second activity window:** Drops DPS to zero if damage totals unchanged for 2s. Prevents 20-30s tail-off delay that would occur with pure 10s window averaging.
+- **Hit quality tracking:** 10 counters (5 dealt + 5 taken) for Miss, Glancing, Standard, Penetrating, Smashing. Tracked independently via keyword detection in combat log.
+- **Miss-specific parsing:** Misses use different patterns than hits ("you miss X" vs "you hit X"). Added dedicated miss detection before normal damage parsing to capture these events with amount=0.0.
+
+### Constants & thresholds
+```cpp
+// Overlay renderer (src/overlay/overlay_renderer.cpp)
+constexpr std::uint64_t kCombatHistoryWindowMs = 120000;      // 2-minute rolling history
+constexpr std::uint64_t kDpsCalculationWindowMs = 10000;      // 10s DPS calculation baseline
+constexpr std::uint64_t kRecentActivityWindowMs = 2000;       // 2s activity detection for tail-off
+constexpr float kPeakQuantum = 1.0f;                          // Peak quantization to nearest 1.0 DPS
+constexpr std::uint64_t kPeakUpdateThrottleMs = 100;          // Minimum 100ms between peak updates
+
+// Helper aggregator (src/helper/log_watcher.cpp)
+constexpr std::chrono::seconds kDefaultWindow{30};            // 30s recent damage window
+```
+
+### Hit quality parser patterns
+```cpp
+// Outbound misses
+"you miss [target]"
+"your [weapon] misses [target]"
+
+// Inbound misses
+"[attacker] misses you"
+"[attacker] miss you"
+
+// Quality keywords (searched in lowercase)
+"miss"      → HitQuality::Miss
+"glanc"     → HitQuality::Glancing   (matches "glances off", "glancing")
+"penetrat"  → HitQuality::Penetrating (matches "penetrates", "penetrating")
+"smash"     → HitQuality::Smashing    (matches "smashes", "smashing")
+(default)   → HitQuality::Standard
+```
+
+### UI display format
+```
+Combat totals: 15268.0 dealt | 2449.0 taken
+Hits dealt: 60 (9 pen, 13 smash, 31 std, 7 glance) | 0 miss
+Hits taken: 109 (35 pen, 21 smash, 42 std, 11 glance) | 0 miss
+Session 2.8 min (started 2.8 min ago)
+
+[Dual-line sparkline: orange dealt, red taken]
+
+Current: 0.0 DPS dealt | 26.3 DPS taken
+Peak: 206.9 DPS
+```
+
+### Troubleshooting
+| Symptom | First checks | Resolution |
+| --- | --- | --- |
+| Sharp peaks oscillating 3-4Hz | Confirm using raw data plotting, not interpolation. | Remove any sampling loops; plot `combatDamageValues_` directly. |
+| Peaks bouncing up/down | Check peak tracking uses decay + quantization. | Ensure `combatPeakDps_` updated with `std::ceil(value / kPeakQuantum) * kPeakQuantum`. |
+| Slow tail-off (20-30s) | Verify 2s activity detection implemented. | Check `withinRecentActivity` flag in `recordCombatDamageLocked()`. |
+| Time direction backwards | Ensure anchoring to `now_ms()`, plotting backwards. | t-0s should be right edge, t-120s left edge. |
+| Jerky movement | Confirm plotting raw data points, not sampling. | No interpolation; let X positions shift naturally with time. |
+| Miss counters not incrementing | Check miss-specific parsing runs before hits. | Verify miss patterns detected in lowercase `line.find("miss")`. |
+| Hover tooltips wrong time | Confirm tooltip uses `anchorMs - value.timestampMs`. | Age calculation should match sparkline X mapping. |
+
+### File locations
+- **Session persistence (planned):** `%LocalAppData%\EFOverlay\data\combat_session.json`
+- **DPS calculation:** `src/overlay/overlay_renderer.cpp` → `recordCombatDamageLocked()`
+- **Sparkline rendering:** `src/overlay/overlay_renderer.cpp` → `renderCombatTab()` lambda
+- **Hit quality parsing:** `src/helper/log_parsers.cpp` → `parse_combat_damage_line()`
+- **Session tracking:** `src/helper/log_watcher.cpp` → `CombatTelemetryAggregator`
+
+### Testing checklist
+- ✅ Engage combat with 3 weapons → sparkline shows sharp orange spikes for weapon fire.
+- ✅ Take damage → red line appears showing incoming damage spikes.
+- ✅ Sharp peaks stay rock-solid → zero oscillation during combat.
+- ✅ Stop combat → DPS drops to zero within 2 seconds (fast tail-off).
+- ✅ Hover over sparkline → tooltip shows correct time ago + both DPS values.
+- ✅ Hit quality counters increment → breakdown shows pen/smash/std/glance/miss.
+- ✅ Session totals persist → restart helper, totals maintained.
+- ✅ Reset button → totals clear, history cleared, session restarts.
+
+## 9. Known gaps & follow-ups
+- Combat session persistence (`combat_session.json`) not yet implemented; reset button not wired to delete file.
+- Installer/signing work queued for Phase 6 (currently evaluating Azure Code Signing).
+- Need automated integration tests once combat telemetry stabilizes (track in decision log when scheduled).
+
+## 10. Contact & escalation
 - If a task touches signed binaries, installer distribution, or cross-repo schema changes, request operator confirmation/tokens before proceeding.
 - Record substantive troubleshooting outcomes and mitigations in `docs/decision-log.md` so the next agent can avoid duplicating investigations.
 

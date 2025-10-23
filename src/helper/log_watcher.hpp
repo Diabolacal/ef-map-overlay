@@ -42,9 +42,26 @@ namespace helper::logs
         double recentDamageTaken{0.0};
         double recentWindowSeconds{30.0};
         std::uint64_t lastEventMs{0};
+        std::uint64_t sessionStartMs{0};
+        double sessionDurationSeconds{0.0};
+        
+        // Hit quality counters (dealt)
+        std::uint64_t missDealt{0};
+        std::uint64_t glancingDealt{0};
+        std::uint64_t standardDealt{0};
+        std::uint64_t penetratingDealt{0};
+        std::uint64_t smashingDealt{0};
+        
+        // Hit quality counters (taken)
+        std::uint64_t missTaken{0};
+        std::uint64_t glancingTaken{0};
+        std::uint64_t standardTaken{0};
+        std::uint64_t penetratingTaken{0};
+        std::uint64_t smashingTaken{0};
+        
         [[nodiscard]] bool hasData() const
         {
-            return totalDamageDealt > 0.0 || totalDamageTaken > 0.0 || lastEventMs != 0;
+            return totalDamageDealt > 0.0 || totalDamageTaken > 0.0 || lastEventMs != 0 || sessionStartMs != 0;
         }
     };
 

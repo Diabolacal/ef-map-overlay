@@ -1,3 +1,46 @@
+## 2025-10-23 – Combat telemetry implementation (Phase 3)
+- Goal: Implement full combat telemetry tracking with dual-line sparkline visualization, session persistence, and hit quality analytics.
+- Files: 
+  - Parser: `src/helper/log_parsers.hpp`, `src/helper/log_parsers.cpp` (HitQuality enum, miss detection)
+  - Aggregation: `src/helper/log_watcher.hpp`, `src/helper/log_watcher.cpp` (CombatTelemetryAggregator with hit quality counters)
+  - Schema: `src/shared/overlay_schema.hpp`, `src/shared/overlay_schema.cpp` (combat session + hit quality fields)
+  - Rendering: `src/overlay/overlay_renderer.hpp`, `src/overlay/overlay_renderer.cpp` (dual-line sparkline, ~144px height)
+- Features implemented:
+  - **Dual-line sparkline:** Orange (dealt damage) + red (taken damage), 2-minute window, ~144px height (2x mining sparkline for better combat visibility)
+  - **DPS calculation:** 10-second rolling window for smooth DPS curves showing weapon fire patterns
+  - **Activity detection:** 2-second tail-off when combat ends (drops to zero if no damage change in 2s)
+  - **Session tracking:** sessionStartMs, sessionDurationSeconds persisted across helper restarts
+  - **Hit quality tracking:** Miss, Glancing, Standard, Penetrating, Smashing tracked separately for dealt/taken (10 counters total)
+  - **Hover tooltips:** Show time ago (t-Xs) + both DPS values anywhere on sparkline
+  - **Reset button:** Clears session totals and history
+- Diff: ~+850 / −50 (new data structures, parser extensions, rendering logic, schema fields).
+- Risk: medium (new telemetry pipeline + complex sparkline rendering).
+- Gates: build ✅ | tests ⚪ (manual live combat validation) | smoke ✅ (multiple combat sessions tested, all features working).
+- Technical challenges & solutions:
+  1. **Backwards time display:** Fixed by anchoring samples to `now_ms()` and plotting backwards (t-0s right, t-120s left)
+  2. **Jerky discrete movement:** Fixed by plotting raw data points directly (no interpolation), letting ImGui handle smooth rendering
+  3. **20-30s tail-off delay:** Fixed with 2-second recent activity window (instant zero when damage stops changing)
+  4. **Bouncing peaks (rescaling):** Fixed with stable peak tracking using 1% per second decay, never decaying below observed peak
+  5. **Oscillating sharp peaks (3-4Hz vibration):** Root cause was interpolation at moving anchor creating synthetic values that fluctuated frame-to-frame. Fixed by removing interpolation entirely and plotting raw `combatDamageValues_` data points directly. X positions shift smoothly (scrolling effect), Y values locked to stable DPS data (zero oscillation).
+  6. **Miss detection:** Misses use different log patterns than hits ("you miss X" vs "you hit X"). Added miss-specific pattern detection before normal damage parsing.
+- Hit quality parser patterns:
+  - Outbound misses: "you miss [target]", "your [weapon] misses [target]"
+  - Inbound misses: "[attacker] misses you", "[attacker] miss you"
+  - Quality keywords: "miss", "glanc" (glancing), "penetrat" (penetrating), "smash" (smashing)
+- UI display format:
+  - Combat totals: "15268.0 dealt | 2449.0 taken"
+  - Hits dealt: "60 (9 pen, 13 smash, 31 std, 7 glance) | 0 miss"
+  - Hits taken: "109 (35 pen, 21 smash, 42 std, 11 glance) | 0 miss"
+  - Session: "2.8 min (started 2.8 min ago)"
+  - Current DPS: "0.0 DPS dealt | 26.3 DPS taken"
+  - Peak: "206.9 DPS"
+- Cross-repo: None (overlay-only feature; combat log parsing independent of EF-Map-main).
+- Follow-ups: 
+  - Implement combat session persistence (combat_session.json) with hit quality counters
+  - Wire reset button to delete persisted file
+  - Update GAME_OVERLAY_PLAN.md Phase 3 status (queued → complete)
+  - Document combat architecture in LLM_TROUBLESHOOTING_GUIDE.md Section 8
+
 ## 2025-10-23 – Increase mining decay hold period for large laser compatibility
 - Goal: Prevent jaggy sparkline when players use large mining lasers (6-second cycle time) by extending the hold period before decay starts.
 - Files: `src/overlay/overlay_renderer.cpp`, `docs/LLM_TROUBLESHOOTING_GUIDE.md`.

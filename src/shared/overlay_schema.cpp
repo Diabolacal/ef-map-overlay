@@ -249,6 +249,59 @@ namespace overlay
                 {
                     combat.last_event_ms = combatJson.at("last_event_ms").get<std::uint64_t>();
                 }
+                if (combatJson.contains("session_start_ms"))
+                {
+                    combat.session_start_ms = combatJson.at("session_start_ms").get<std::uint64_t>();
+                }
+                if (combatJson.contains("session_duration_seconds"))
+                {
+                    combat.session_duration_seconds = combatJson.at("session_duration_seconds").get<double>();
+                }
+                
+                // Hit quality counters (dealt)
+                if (combatJson.contains("miss_dealt"))
+                {
+                    combat.miss_dealt = combatJson.at("miss_dealt").get<std::uint64_t>();
+                }
+                if (combatJson.contains("glancing_dealt"))
+                {
+                    combat.glancing_dealt = combatJson.at("glancing_dealt").get<std::uint64_t>();
+                }
+                if (combatJson.contains("standard_dealt"))
+                {
+                    combat.standard_dealt = combatJson.at("standard_dealt").get<std::uint64_t>();
+                }
+                if (combatJson.contains("penetrating_dealt"))
+                {
+                    combat.penetrating_dealt = combatJson.at("penetrating_dealt").get<std::uint64_t>();
+                }
+                if (combatJson.contains("smashing_dealt"))
+                {
+                    combat.smashing_dealt = combatJson.at("smashing_dealt").get<std::uint64_t>();
+                }
+                
+                // Hit quality counters (taken)
+                if (combatJson.contains("miss_taken"))
+                {
+                    combat.miss_taken = combatJson.at("miss_taken").get<std::uint64_t>();
+                }
+                if (combatJson.contains("glancing_taken"))
+                {
+                    combat.glancing_taken = combatJson.at("glancing_taken").get<std::uint64_t>();
+                }
+                if (combatJson.contains("standard_taken"))
+                {
+                    combat.standard_taken = combatJson.at("standard_taken").get<std::uint64_t>();
+                }
+                if (combatJson.contains("penetrating_taken"))
+                {
+                    combat.penetrating_taken = combatJson.at("penetrating_taken").get<std::uint64_t>();
+                }
+                if (combatJson.contains("smashing_taken"))
+                {
+                    combat.smashing_taken = combatJson.at("smashing_taken").get<std::uint64_t>();
+                }
+                
                 metrics.combat = combat;
             }
 
@@ -511,7 +564,21 @@ namespace overlay
                     {"recent_damage_dealt", combat.recent_damage_dealt},
                     {"recent_damage_taken", combat.recent_damage_taken},
                     {"recent_window_seconds", combat.recent_window_seconds},
-                    {"last_event_ms", combat.last_event_ms}
+                    {"last_event_ms", combat.last_event_ms},
+                    {"session_start_ms", combat.session_start_ms},
+                    {"session_duration_seconds", combat.session_duration_seconds},
+                    // Hit quality counters (dealt)
+                    {"miss_dealt", combat.miss_dealt},
+                    {"glancing_dealt", combat.glancing_dealt},
+                    {"standard_dealt", combat.standard_dealt},
+                    {"penetrating_dealt", combat.penetrating_dealt},
+                    {"smashing_dealt", combat.smashing_dealt},
+                    // Hit quality counters (taken)
+                    {"miss_taken", combat.miss_taken},
+                    {"glancing_taken", combat.glancing_taken},
+                    {"standard_taken", combat.standard_taken},
+                    {"penetrating_taken", combat.penetrating_taken},
+                    {"smashing_taken", combat.smashing_taken}
                 };
             }
 

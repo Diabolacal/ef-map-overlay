@@ -57,6 +57,22 @@ namespace overlay
         double recent_damage_taken{0.0};
         double recent_window_seconds{30.0};
         std::uint64_t last_event_ms{0};
+        std::uint64_t session_start_ms{0};
+        double session_duration_seconds{0.0};
+        
+        // Hit quality counters (dealt)
+        std::uint64_t miss_dealt{0};
+        std::uint64_t glancing_dealt{0};
+        std::uint64_t standard_dealt{0};
+        std::uint64_t penetrating_dealt{0};
+        std::uint64_t smashing_dealt{0};
+        
+        // Hit quality counters (taken)
+        std::uint64_t miss_taken{0};
+        std::uint64_t glancing_taken{0};
+        std::uint64_t standard_taken{0};
+        std::uint64_t penetrating_taken{0};
+        std::uint64_t smashing_taken{0};
     };
 
     struct TelemetryBucket

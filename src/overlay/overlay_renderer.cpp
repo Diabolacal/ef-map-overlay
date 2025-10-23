@@ -122,6 +122,10 @@ void OverlayRenderer::resetState()
     tabsInitialized_ = false;
     miningRateHistory_.clear();
     miningRateValues_.clear();
+    combatDamageHistory_.clear();
+    combatDamageValues_.clear();
+    combatPeakDps_ = 1.0f;
+    combatPeakDpsLastUpdateMs_ = 0;
 }
 
 void OverlayRenderer::recordMiningRateLocked(const overlay::OverlayState& state, std::uint64_t updatedAtMs)
@@ -232,6 +236,156 @@ void OverlayRenderer::recordMiningRateLocked(const overlay::OverlayState& state,
     }
 }
 
+void OverlayRenderer::recordCombatDamageLocked(const overlay::OverlayState& state, std::uint64_t updatedAtMs)
+{
+    if (!state.telemetry.has_value() || !state.telemetry->combat.has_value())
+    {
+        return;
+    }
+
+    const overlay::CombatTelemetry& combat = *state.telemetry->combat;
+
+    std::uint64_t timestamp = updatedAtMs != 0 ? updatedAtMs : state.generated_at_ms;
+    if (timestamp == 0)
+    {
+        timestamp = now_ms();
+    }
+
+    bool replacedLast = false;
+    if (!combatDamageHistory_.empty() && combatDamageHistory_.back().timestampMs == timestamp)
+    {
+        combatDamageHistory_.back().totalDamageDealt = combat.total_damage_dealt;
+        combatDamageHistory_.back().totalDamageTaken = combat.total_damage_taken;
+        replacedLast = true;
+    }
+    else
+    {
+        combatDamageHistory_.push_back({timestamp, combat.total_damage_dealt, combat.total_damage_taken});
+    }
+
+    // Use 120s window for combat (same as mining for consistency in visualization)
+    constexpr std::uint64_t kCombatHistoryWindowMs = 120000;
+    const std::uint64_t cutoff = timestamp > kCombatHistoryWindowMs ? timestamp - kCombatHistoryWindowMs : 0;
+    
+    while (!combatDamageHistory_.empty() && combatDamageHistory_.front().timestampMs < cutoff)
+    {
+        combatDamageHistory_.pop_front();
+    }
+
+    while (!combatDamageValues_.empty() && combatDamageValues_.front().timestampMs < cutoff)
+    {
+        combatDamageValues_.pop_front();
+    }
+
+    float computedDpsDealt = 0.0f;
+    float computedDpsTaken = 0.0f;
+
+    if (combatDamageHistory_.size() >= 2)
+    {
+        auto interpolateDamageAt = [&](std::uint64_t targetMs, bool dealt) -> double {
+            if (targetMs <= combatDamageHistory_.front().timestampMs)
+            {
+                return dealt ? combatDamageHistory_.front().totalDamageDealt : combatDamageHistory_.front().totalDamageTaken;
+            }
+            if (targetMs >= combatDamageHistory_.back().timestampMs)
+            {
+                return dealt ? combatDamageHistory_.back().totalDamageDealt : combatDamageHistory_.back().totalDamageTaken;
+            }
+
+            auto it = std::lower_bound(combatDamageHistory_.begin(), combatDamageHistory_.end(), targetMs,
+                [](const CombatDamageSample& sample, std::uint64_t value) {
+                    return sample.timestampMs < value;
+                });
+
+            if (it == combatDamageHistory_.begin())
+            {
+                return dealt ? it->totalDamageDealt : it->totalDamageTaken;
+            }
+
+            const CombatDamageSample& right = *it;
+            const CombatDamageSample& left = *(it - 1);
+            const std::uint64_t spanMs = right.timestampMs - left.timestampMs;
+            if (spanMs == 0)
+            {
+                return dealt ? right.totalDamageDealt : right.totalDamageTaken;
+            }
+
+            const double leftVal = dealt ? left.totalDamageDealt : left.totalDamageTaken;
+            const double rightVal = dealt ? right.totalDamageDealt : right.totalDamageTaken;
+            const double fraction = static_cast<double>(targetMs - left.timestampMs) / static_cast<double>(spanMs);
+            return leftVal + fraction * (rightVal - leftVal);
+        };
+
+        const std::uint64_t anchorTimestamp = combatDamageHistory_.back().timestampMs;
+        const std::uint64_t earliestTimestamp = combatDamageHistory_.front().timestampMs;
+        
+        // Use 10s window for DPS calculation (same as mining rate)
+        constexpr std::uint64_t kDpsCalculationWindowMs = 10000;
+        std::uint64_t baselineTimestamp = anchorTimestamp > kDpsCalculationWindowMs
+            ? anchorTimestamp - kDpsCalculationWindowMs
+            : earliestTimestamp;
+        if (baselineTimestamp < earliestTimestamp)
+        {
+            baselineTimestamp = earliestTimestamp;
+        }
+
+        const double currentDealt = interpolateDamageAt(anchorTimestamp, true);
+        const double currentTaken = interpolateDamageAt(anchorTimestamp, false);
+        const double baselineDealt = interpolateDamageAt(baselineTimestamp, true);
+        const double baselineTaken = interpolateDamageAt(baselineTimestamp, false);
+        
+        const std::uint64_t elapsedMs = anchorTimestamp > baselineTimestamp ? anchorTimestamp - baselineTimestamp : 0;
+
+        if (elapsedMs > 0)
+        {
+            const double deltaDealt = currentDealt - baselineDealt;
+            const double deltaTaken = currentTaken - baselineTaken;
+            
+            // Check for recent activity: if no damage change in last 2 seconds, drop DPS to zero
+            // This prevents the long tail-off when combat ends
+            constexpr std::uint64_t kRecentActivityWindowMs = 2000;
+            const std::uint64_t recentCheckTimestamp = anchorTimestamp > kRecentActivityWindowMs 
+                ? anchorTimestamp - kRecentActivityWindowMs 
+                : earliestTimestamp;
+            
+            const double recentDealt = interpolateDamageAt(recentCheckTimestamp, true);
+            const double recentTaken = interpolateDamageAt(recentCheckTimestamp, false);
+            
+            const bool hasRecentDealtActivity = (currentDealt - recentDealt) > 0.1;  // Threshold to avoid floating point noise
+            const bool hasRecentTakenActivity = (currentTaken - recentTaken) > 0.1;
+            
+            if (deltaDealt > 0.0 && hasRecentDealtActivity)
+            {
+                // DPS = damage per second
+                computedDpsDealt = static_cast<float>((deltaDealt * 1000.0) / static_cast<double>(elapsedMs));
+            }
+            else
+            {
+                computedDpsDealt = 0.0f;  // No recent activity, drop to zero immediately
+            }
+            
+            if (deltaTaken > 0.0 && hasRecentTakenActivity)
+            {
+                computedDpsTaken = static_cast<float>((deltaTaken * 1000.0) / static_cast<double>(elapsedMs));
+            }
+            else
+            {
+                computedDpsTaken = 0.0f;  // No recent activity, drop to zero immediately
+            }
+        }
+    }
+
+    if (replacedLast && !combatDamageValues_.empty() && combatDamageValues_.back().timestampMs == timestamp)
+    {
+        combatDamageValues_.back().dpsDealt = computedDpsDealt;
+        combatDamageValues_.back().dpsTaken = computedDpsTaken;
+    }
+    else
+    {
+        combatDamageValues_.push_back({timestamp, computedDpsDealt, computedDpsTaken});
+    }
+}
+
 OverlayRenderer::TelemetryResetResult OverlayRenderer::performTelemetryReset()
 {
     TelemetryResetResult result;
@@ -305,6 +459,7 @@ void OverlayRenderer::pollLoop()
                     lastHeartbeatMs_ = parsedState.heartbeat_ms;
                     lastSourceOnline_ = parsedState.source_online;
                     recordMiningRateLocked(parsedState, updatedAt);
+                    recordCombatDamageLocked(parsedState, updatedAt);
                 }
 
                 if (autoHidden_.load())
@@ -1125,108 +1280,422 @@ void OverlayRenderer::renderImGui()
         };
 
         auto renderCombatTab = [&]() {
-            if (!telemetry || !telemetry->combat.has_value())
+            // Always show the UI structure, even if no data yet
+            const bool hasTelemetry = telemetry && telemetry->combat.has_value();
+            
+            if (!hasTelemetry)
             {
-                ImGui::TextDisabled("No combat telemetry yet. Engage a target to populate this tab.");
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::Text("Combat totals: 0 dealt | 0 taken");
+                ImGui::Spacing();
+                ImGui::TextDisabled("Damage over time (2 min)");
+                
+                // Show empty sparkline container
+                const float sparklineHeight = 144.0f;  // 2x mining height
+                const float sparklineWidth = std::max(180.0f, ImGui::GetContentRegionAvail().x);
+                ImVec2 sparkPos = ImGui::GetCursorScreenPos();
+                ImVec2 sparkMax = ImVec2(sparkPos.x + sparklineWidth, sparkPos.y + sparklineHeight);
+                
+                const float sparkAlpha = windowFocused ? kWindowBgFocused.w : kWindowBgUnfocused.w;
+                ImVec4 sparkBackground = kMiningGraphBackgroundBase;
+                sparkBackground.w = sparkAlpha;
+                drawList->AddRectFilled(sparkPos, sparkMax, ImGui::ColorConvertFloat4ToU32(sparkBackground), 5.0f);
+                
+                ImGui::Dummy(ImVec2(sparklineWidth, sparklineHeight));
+                ImGui::Spacing();
+                ImGui::TextDisabled("Engage a target to populate combat data.");
                 return;
             }
-
+            
             const overlay::CombatTelemetry& combat = *telemetry->combat;
 
             ImGui::Separator();
-            ImGui::Text("Total damage: dealt %.1f | taken %.1f", combat.total_damage_dealt, combat.total_damage_taken);
+            ImGui::Text("Combat totals: %.1f dealt | %.1f taken", combat.total_damage_dealt, combat.total_damage_taken);
 
-            if (combat.recent_window_seconds > 0.0)
+            // Display hit quality breakdown
+            const std::uint64_t totalDealt = combat.miss_dealt + combat.glancing_dealt + combat.standard_dealt + 
+                                             combat.penetrating_dealt + combat.smashing_dealt;
+            const std::uint64_t totalTaken = combat.miss_taken + combat.glancing_taken + combat.standard_taken + 
+                                             combat.penetrating_taken + combat.smashing_taken;
+            
+            if (totalDealt > 0)
             {
-                const double dealtDps = combat.recent_damage_dealt / combat.recent_window_seconds;
-                const double takenDps = combat.recent_damage_taken / combat.recent_window_seconds;
-                ImGui::Text("Recent (%.0fs): dealt %.1f dmg (%.1f DPS) | taken %.1f dmg (%.1f DPS)",
-                    combat.recent_window_seconds,
-                    combat.recent_damage_dealt,
-                    dealtDps,
-                    combat.recent_damage_taken,
-                    takenDps);
+                ImGui::Text("Hits dealt: %llu (%llu pen, %llu smash, %llu std, %llu glance) | %llu miss",
+                    totalDealt, combat.penetrating_dealt, combat.smashing_dealt, 
+                    combat.standard_dealt, combat.glancing_dealt, combat.miss_dealt);
             }
-            else
+            
+            if (totalTaken > 0)
             {
-                ImGui::TextDisabled("Recent combat window unavailable");
-            }
-
-            if (combat.last_event_ms > 0)
-            {
-                const double secondsSince = nowMsValue > combat.last_event_ms
-                    ? static_cast<double>(nowMsValue - combat.last_event_ms) / 1000.0
-                    : 0.0;
-                ImGui::TextDisabled("Last combat event %.1f s ago", secondsSince);
-            }
-            else
-            {
-                ImGui::TextDisabled("No combat events observed yet");
+                ImGui::Text("Hits taken: %llu (%llu pen, %llu smash, %llu std, %llu glance) | %llu miss",
+                    totalTaken, combat.penetrating_taken, combat.smashing_taken, 
+                    combat.standard_taken, combat.glancing_taken, combat.miss_taken);
             }
 
-            if (telemetry && telemetry->history.has_value())
+            if (combat.session_duration_seconds > 0.0)
             {
-                const overlay::TelemetryHistory& history = *telemetry->history;
-                ImGui::Separator();
-                ImGui::TextDisabled("Damage per slice (%.0fs slices, %u max)", history.slice_seconds, history.capacity);
-
-                if (!history.slices.empty())
+                const double sessionMinutes = combat.session_duration_seconds / 60.0;
+                const double sinceStartMinutes = combat.session_duration_seconds / 60.0;
+                if (combat.session_start_ms > 0)
                 {
-                    std::vector<float> dealt;
-                    std::vector<float> taken;
-                    dealt.reserve(history.slices.size());
-                    taken.reserve(history.slices.size());
-                    float maxValue = 0.0f;
-                    for (const overlay::TelemetryHistorySlice& slice : history.slices)
+                    ImGui::TextDisabled("Session %.1f min (started %.1f min ago)", sessionMinutes, sinceStartMinutes);
+                }
+            }
+
+            ImGui::Spacing();
+            ImGui::TextDisabled("Damage over time (2 min)");
+
+            // Dual-line sparkline: orange for dealt, red for taken
+            std::deque<CombatDamageValue> combatDamageValuesCopy;
+            {
+                std::lock_guard<std::mutex> lock(stateMutex_);
+                combatDamageValuesCopy = combatDamageValues_;
+            }
+
+            const float sparklineHeight = 144.0f;  // 2x mining height for better combat visibility
+            const float sparklineWidth = std::max(180.0f, ImGui::GetContentRegionAvail().x);
+            ImVec2 sparkPos = ImGui::GetCursorScreenPos();
+            ImVec2 sparkMax = ImVec2(sparkPos.x + sparklineWidth, sparkPos.y + sparklineHeight);
+
+            const float sparkAlpha = windowFocused ? kWindowBgFocused.w : kWindowBgUnfocused.w;
+            ImVec4 sparkBackground = kMiningGraphBackgroundBase;
+            sparkBackground.w = sparkAlpha;
+            drawList->AddRectFilled(sparkPos, sparkMax, ImGui::ColorConvertFloat4ToU32(sparkBackground), 5.0f);
+
+            if (!combatDamageValuesCopy.empty())
+            {
+                constexpr float paddingX = 8.0f;
+                constexpr float paddingY = 6.0f;
+                const float leftX = sparkPos.x + paddingX;
+                const float rightX = sparkMax.x - paddingX;
+                const float innerWidth = std::max(1.0f, rightX - leftX);
+                const float innerHeight = std::max(1.0f, sparklineHeight - (paddingY * 2.0f));
+
+                // Use current time as anchor (like mining sparkline) for smooth continuous scrolling
+                const std::uint64_t anchorMs = now_ms();
+                constexpr std::uint64_t windowMs = 120000;  // 2 minutes
+                constexpr std::uint64_t sampleIntervalMs = 250;  // Sample every 250ms for smooth curves
+                
+                // Helper to interpolate DPS at any timestamp
+                auto interpolateDpsAt = [&](std::uint64_t targetMs) -> std::pair<float, float> {
+                    if (combatDamageValuesCopy.empty())
                     {
-                        dealt.push_back(static_cast<float>(slice.damage_dealt));
-                        taken.push_back(static_cast<float>(slice.damage_taken));
-                        const float latestMax = std::max(dealt.back(), taken.back());
-                        maxValue = std::max(maxValue, latestMax);
+                        return {0.0f, 0.0f};
+                    }
+                    
+                    // Before first sample
+                    if (targetMs <= combatDamageValuesCopy.front().timestampMs)
+                    {
+                        return {combatDamageValuesCopy.front().dpsDealt, combatDamageValuesCopy.front().dpsTaken};
+                    }
+                    
+                    // After last sample
+                    if (targetMs >= combatDamageValuesCopy.back().timestampMs)
+                    {
+                        return {combatDamageValuesCopy.back().dpsDealt, combatDamageValuesCopy.back().dpsTaken};
+                    }
+                    
+                    // Find bounding samples
+                    auto upper = std::lower_bound(combatDamageValuesCopy.begin(), combatDamageValuesCopy.end(), targetMs,
+                        [](const CombatDamageValue& sample, std::uint64_t value) {
+                            return sample.timestampMs < value;
+                        });
+                    
+                    if (upper == combatDamageValuesCopy.begin())
+                    {
+                        return {upper->dpsDealt, upper->dpsTaken};
+                    }
+                    
+                    const CombatDamageValue& right = *upper;
+                    const CombatDamageValue& left = *(upper - 1);
+                    const std::uint64_t span = right.timestampMs - left.timestampMs;
+                    if (span == 0)
+                    {
+                        return {right.dpsDealt, right.dpsTaken};
+                    }
+                    
+                    const float fraction = static_cast<float>(targetMs - left.timestampMs) / static_cast<float>(span);
+                    const float dealtDps = left.dpsDealt + fraction * (right.dpsDealt - left.dpsDealt);
+                    const float takenDps = left.dpsTaken + fraction * (right.dpsTaken - left.dpsTaken);
+                    return {dealtDps, takenDps};
+                };
+
+                // Plot actual data points directly without interpolation to avoid oscillation
+                // The raw data points are stable, and ImGui's AddPolyline will handle smooth rendering
+                float observedPeakDps = 1.0f;
+                for (const auto& value : combatDamageValuesCopy)
+                {
+                    observedPeakDps = std::max(observedPeakDps, std::max(value.dpsDealt, value.dpsTaken));
+                }
+                
+                // Stable peak tracking with slow decay to prevent bouncing
+                // Quantize peak to prevent sub-pixel oscillation from tiny floating-point changes
+                constexpr float kPeakQuantum = 1.0f;  // Round to nearest 1.0 DPS
+                {
+                    std::lock_guard<std::mutex> lock(stateMutex_);
+                    
+                    // If we see a new peak, update immediately and quantize
+                    if (observedPeakDps > combatPeakDps_)
+                    {
+                        combatPeakDps_ = std::ceil(observedPeakDps / kPeakQuantum) * kPeakQuantum;
+                        combatPeakDpsLastUpdateMs_ = anchorMs;
+                    }
+                    // Otherwise, allow slow decay: 1% per second, but only update if change exceeds quantum
+                    else if (combatPeakDpsLastUpdateMs_ > 0)
+                    {
+                        const std::uint64_t elapsedMs = anchorMs > combatPeakDpsLastUpdateMs_ 
+                            ? anchorMs - combatPeakDpsLastUpdateMs_ 
+                            : 0;
+                        
+                        // Only decay every 100ms to reduce jitter
+                        if (elapsedMs >= 100)
+                        {
+                            const float elapsedSeconds = static_cast<float>(elapsedMs) / 1000.0f;
+                            const float decayFactor = std::pow(0.99f, elapsedSeconds);  // 1% decay per second
+                            
+                            const float decayedPeak = combatPeakDps_ * decayFactor;
+                            
+                            // Don't let it decay below observed peak
+                            float newPeak = std::max(decayedPeak, observedPeakDps);
+                            
+                            // Quantize to prevent oscillation
+                            newPeak = std::ceil(newPeak / kPeakQuantum) * kPeakQuantum;
+                            
+                            // Only update if the change is significant
+                            if (std::abs(newPeak - combatPeakDps_) >= kPeakQuantum)
+                            {
+                                combatPeakDps_ = newPeak;
+                                combatPeakDpsLastUpdateMs_ = anchorMs;
+                            }
+                            
+                            // Prevent it from going too low
+                            if (combatPeakDps_ < 1.0f)
+                            {
+                                combatPeakDps_ = 1.0f;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        combatPeakDps_ = std::ceil(observedPeakDps / kPeakQuantum) * kPeakQuantum;
+                        combatPeakDpsLastUpdateMs_ = anchorMs;
+                    }
+                }
+                
+                const float peakDps = combatPeakDps_;
+
+                // Build line points from actual data (no interpolation to avoid oscillation)
+                std::vector<ImVec2> linePointsDealt;
+                std::vector<ImVec2> linePointsTaken;
+                linePointsDealt.reserve(combatDamageValuesCopy.size());
+                linePointsTaken.reserve(combatDamageValuesCopy.size());
+                
+                const float windowMsF = static_cast<float>(windowMs);
+                
+                // Plot raw data points directly - they're stable and won't oscillate
+                for (const auto& value : combatDamageValuesCopy)
+                {
+                    // Calculate age from anchor (now)
+                    const std::uint64_t ageMs = anchorMs > value.timestampMs ? anchorMs - value.timestampMs : 0;
+                    
+                    // Skip points outside the window
+                    if (ageMs > windowMs)
+                    {
+                        continue;
+                    }
+                    
+                    // normalizedTime: 0.0 = left edge (old), 1.0 = right edge (now)
+                    const float normalizedTime = 1.0f - std::min(static_cast<float>(ageMs) / windowMsF, 1.0f);
+                    const float x = leftX + normalizedTime * innerWidth;
+                    
+                    // Plot dealt damage (orange line)
+                    {
+                        const float normalizedDps = std::clamp(value.dpsDealt / peakDps, 0.0f, 1.0f);
+                        const float y = sparkMax.y - paddingY - normalizedDps * innerHeight;
+                        linePointsDealt.push_back(ImVec2(x, y));
+                    }
+                    
+                    // Plot taken damage (red line)
+                    {
+                        const float normalizedDps = std::clamp(value.dpsTaken / peakDps, 0.0f, 1.0f);
+                        const float y = sparkMax.y - paddingY - normalizedDps * innerHeight;
+                        linePointsTaken.push_back(ImVec2(x, y));
+                    }
+                }
+
+                // Draw taken damage line (red) first so dealt (orange) draws on top
+                if (linePointsTaken.size() >= 2)
+                {
+                    const ImVec4 takenColor = ImVec4(1.0f, 0.2f, 0.1f, sparkAlpha);  // Red for incoming damage
+                    const ImU32 takenColorU32 = ImGui::ColorConvertFloat4ToU32(takenColor);
+                    drawList->AddPolyline(linePointsTaken.data(), static_cast<int>(linePointsTaken.size()), takenColorU32, false, 2.0f);
+                    
+                    // Draw dot at latest point (first element = ageMs=0 = now = right edge)
+                    if (!linePointsTaken.empty())
+                    {
+                        drawList->AddCircleFilled(linePointsTaken.front(), 3.0f, takenColorU32);
+                    }
+                }
+
+                // Draw dealt damage line (orange) on top
+                if (linePointsDealt.size() >= 2)
+                {
+                    ImVec4 dealtColor = kMiningGraphLine;  // Orange for outgoing damage
+                    dealtColor.w = sparkAlpha;
+                    const ImU32 dealtColorU32 = ImGui::ColorConvertFloat4ToU32(dealtColor);
+                    drawList->AddPolyline(linePointsDealt.data(), static_cast<int>(linePointsDealt.size()), dealtColorU32, false, 2.0f);
+                    
+                    // Draw dot at latest point (first element = ageMs=0 = now = right edge)
+                    if (!linePointsDealt.empty())
+                    {
+                        drawList->AddCircleFilled(linePointsDealt.front(), 3.0f, dealtColorU32);
+                    }
+                }
+
+                // Invisible button for hover detection + tooltips
+                ImGui::SetCursorScreenPos(sparkPos);
+                ImGui::InvisibleButton("CombatDamageSparkline", ImVec2(sparklineWidth, sparklineHeight));
+
+                if (ImGui::IsItemHovered() && !combatDamageValuesCopy.empty())
+                {
+                    const ImVec2 mouse = ImGui::GetIO().MousePos;
+                    const float relX = std::clamp((mouse.x - leftX) / innerWidth, 0.0f, 1.0f);
+                    // Convert mouse X to timestamp: right edge (relX=1.0) is now, left edge (relX=0.0) is old
+                    const float ageMs = (1.0f - relX) * windowMsF;
+                    const std::uint64_t requestedTimestamp = anchorMs > static_cast<std::uint64_t>(ageMs) 
+                        ? anchorMs - static_cast<std::uint64_t>(ageMs) 
+                        : anchorMs;
+
+                    // Find closest data point to the mouse position
+                    auto it = std::lower_bound(combatDamageValuesCopy.begin(), combatDamageValuesCopy.end(), 
+                        requestedTimestamp,
+                        [](const CombatDamageValue& value, std::uint64_t timestamp) {
+                            return value.timestampMs < timestamp;
+                        });
+
+                    std::size_t index = 0;
+                    if (it == combatDamageValuesCopy.end())
+                    {
+                        index = combatDamageValuesCopy.size() - 1;
+                    }
+                    else
+                    {
+                        index = static_cast<std::size_t>(std::distance(combatDamageValuesCopy.begin(), it));
+                        if (it != combatDamageValuesCopy.begin())
+                        {
+                            const std::size_t prevIndex = index - 1;
+                            const std::uint64_t prevTs = combatDamageValuesCopy[prevIndex].timestampMs;
+                            const std::uint64_t currTs = combatDamageValuesCopy[index].timestampMs;
+                            const std::uint64_t prevDiff = requestedTimestamp > prevTs ? requestedTimestamp - prevTs : prevTs - requestedTimestamp;
+                            const std::uint64_t currDiff = currTs > requestedTimestamp ? currTs - requestedTimestamp : requestedTimestamp - currTs;
+                            if (prevDiff < currDiff)
+                            {
+                                index = prevIndex;
+                            }
+                        }
                     }
 
-                    if (maxValue <= 0.0f)
+                    const CombatDamageValue& hoveredValue = combatDamageValuesCopy[index];
+                    const std::uint64_t hoveredAgeMs = anchorMs > hoveredValue.timestampMs ? anchorMs - hoveredValue.timestampMs : 0;
+                    const float ageSeconds = static_cast<float>(hoveredAgeMs) / 1000.0f;
+                    
+                    ImGui::SetTooltip("t-%.1fs: %.1f dealt | %.1f taken DPS", 
+                        ageSeconds, hoveredValue.dpsDealt, hoveredValue.dpsTaken);
+                }
+
+                // Show current DPS values if any (most recent = last in deque)
+                if (!combatDamageValuesCopy.empty())
+                {
+                    const float latestDealt = combatDamageValuesCopy.back().dpsDealt;
+                    const float latestTaken = combatDamageValuesCopy.back().dpsTaken;
+                    ImGui::Text("Current: %.1f DPS dealt | %.1f DPS taken", latestDealt, latestTaken);
+                    ImGui::TextDisabled("Peak: %.1f DPS", peakDps);
+                }
+            }
+            else
+            {
+                ImGui::Dummy(ImVec2(sparklineWidth, sparklineHeight));
+                ImGui::TextDisabled("No combat data yet");
+            }
+
+            // Reset button (matching mining tab style)
+            {
+                auto& feedback = telemetry_reset_feedback();
+                bool resetInFlight = false;
+                bool lastSuccess = false;
+                std::string lastMessage;
+                std::uint64_t lastSuccessMs = 0;
+                {
+                    std::lock_guard<std::mutex> lock(feedback.mutex);
+                    resetInFlight = feedback.inFlight;
+                    lastSuccess = feedback.lastSuccess;
+                    lastMessage = feedback.message;
+                    lastSuccessMs = feedback.lastSuccessMs;
+
+                    // Clear message 3 seconds after successful reset
+                    if (lastSuccess && lastSuccessMs > 0)
                     {
-                        maxValue = 1.0f;
+                        const std::uint64_t currentMs = now_ms();
+                        if (currentMs > lastSuccessMs && (currentMs - lastSuccessMs) > 3000)
+                        {
+                            feedback.message.clear();
+                            lastMessage.clear();
+                        }
                     }
+                }
 
-                    ImGui::PlotLines("Damage dealt",
-                        dealt.data(),
-                        static_cast<int>(dealt.size()),
-                        0,
-                        nullptr,
-                        0.0f,
-                        maxValue * 1.1f,
-                        ImVec2(0.0f, 70.0f));
-
-                    ImGui::PlotLines("Damage taken",
-                        taken.data(),
-                        static_cast<int>(taken.size()),
-                        0,
-                        nullptr,
-                        0.0f,
-                        maxValue * 1.1f,
-                        ImVec2(0.0f, 70.0f));
-
-                    const overlay::TelemetryHistorySlice& latest = history.slices.back();
-                    ImGui::TextDisabled("Latest slice: dealt %.1f dmg | taken %.1f dmg", latest.damage_dealt, latest.damage_taken);
-                    const double windowMinutes = (history.slice_seconds * history.slices.size()) / 60.0;
-                    ImGui::TextDisabled("Coverage: %.1f min", windowMinutes);
+                ImGui::Separator();
+                if (resetInFlight)
+                {
+                    ImGui::TextDisabled("Resetting session...");
                 }
                 else
                 {
-                    ImGui::TextDisabled("History: awaiting samples");
-                }
+                    ImGui::PushStyleColor(ImGuiCol_Button, kButtonBase);
+                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kButtonHover);
+                    ImGui::PushStyleColor(ImGuiCol_ButtonActive, kButtonActive);
 
-                if (!history.reset_markers_ms.empty())
-                {
-                    const std::uint64_t lastReset = history.reset_markers_ms.back();
-                    double minutesAgo = 0.0;
-                    if (nowMsValue > lastReset)
+                    if (ImGui::Button("Reset Session"))
                     {
-                        minutesAgo = static_cast<double>(nowMsValue - lastReset) / 60000.0;
+                        std::thread([this]() {
+                            auto& fb = telemetry_reset_feedback();
+                            {
+                                std::lock_guard<std::mutex> lock(fb.mutex);
+                                fb.inFlight = true;
+                                fb.message.clear();
+                            }
+
+                            auto result = performTelemetryReset();
+
+                            {
+                                std::lock_guard<std::mutex> lock(fb.mutex);
+                                fb.inFlight = false;
+                                fb.lastSuccess = result.success;
+                                fb.lastAttemptMs = result.resetMs;
+                                fb.message = result.message;
+                                if (result.success)
+                                {
+                                    fb.lastSuccessMs = result.resetMs;
+                                }
+                            }
+                        }).detach();
                     }
-                    ImGui::TextDisabled("Last reset %.1f min ago", minutesAgo);
+
+                    ImGui::PopStyleColor(3);
+
+                    if (!lastMessage.empty())
+                    {
+                        ImGui::SameLine();
+                        if (lastSuccess)
+                        {
+                            ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "%s", lastMessage.c_str());
+                        }
+                        else
+                        {
+                            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", lastMessage.c_str());
+                        }
+                    }
                 }
             }
         };

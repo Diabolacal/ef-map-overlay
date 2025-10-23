@@ -36,6 +36,7 @@ private:
     void pollLoop();
     void resetState();
     void recordMiningRateLocked(const overlay::OverlayState& state, std::uint64_t updatedAtMs);
+    void recordCombatDamageLocked(const overlay::OverlayState& state, std::uint64_t updatedAtMs);
 
     struct TelemetryResetResult
     {
@@ -82,4 +83,24 @@ private:
         float rate{0.0f};
     };
     std::deque<MiningRateValue> miningRateValues_;
+
+    struct CombatDamageSample
+    {
+        std::uint64_t timestampMs{0};
+        double totalDamageDealt{0.0};
+        double totalDamageTaken{0.0};
+    };
+    std::deque<CombatDamageSample> combatDamageHistory_;
+
+    struct CombatDamageValue
+    {
+        std::uint64_t timestampMs{0};
+        float dpsDealt{0.0f};
+        float dpsTaken{0.0f};
+    };
+    std::deque<CombatDamageValue> combatDamageValues_;
+    
+    // Stable peak tracking to prevent bouncing during rescaling
+    float combatPeakDps_{1.0f};
+    std::uint64_t combatPeakDpsLastUpdateMs_{0};
 };

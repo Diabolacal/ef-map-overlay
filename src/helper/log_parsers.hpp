@@ -12,11 +12,21 @@ namespace helper::logs
         std::string systemName;
     };
 
+    enum class HitQuality
+    {
+        Miss,
+        Glancing,
+        Standard,
+        Penetrating,
+        Smashing
+    };
+
     struct CombatDamageEvent
     {
         bool playerDealt{false};
         double amount{0.0};
         std::string counterparty;
+        HitQuality quality{HitQuality::Standard};
         std::chrono::system_clock::time_point timestamp{};
     };
 
