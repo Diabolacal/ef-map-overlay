@@ -18,6 +18,7 @@ Useful entry points:
 - Troubleshooting guide: `docs/LLM_TROUBLESHOOTING_GUIDE.md` (overlay-first orientation and playbooks).
 - Initiative plan: `docs/initiatives/GAME_OVERLAY_PLAN.md` (mirrors the plan tracked in the main repo).
 - Decision history: `docs/decision-log.md` (overlay-specific). For broader EF-Map history, read `EF-Map-main/docs/decision-log.md`.
+- **Chrome DevTools MCP**: For web app integration testing, see `EF-Map-main/AGENTS.md` → "Chrome DevTools MCP Mandate". When testing helper ↔ web app communication, use Chrome DevTools MCP to directly inspect browser console/network requests without user intermediary.
 
 Current status snapshot (2025-10-15):
 - Follow mode sync is live across helper, overlay, and EF Map surfaces.
@@ -35,7 +36,28 @@ Current status snapshot (2025-10-15):
 - DX12 overlay rendering: Validate on both windowed and fullscreen modes before marking tasks complete.
 - Localhost bridge: Use signed requests / short-lived tokens; note any security-sensitive changes in the decision log.
 - Installer pipeline: Include signing + packaging verification steps and note certificate usage.
-- Smoke testing note: Launch `ef-overlay-helper.exe` from an external PowerShell window (not the VS Code terminal) and target the game process by name (`exefile.exe`) to avoid PID churn.
+
+## Automated Smoke Testing Workflow (CRITICAL)
+**Assistant responsibility:** The assistant MUST execute all automated smoke test steps. The user's role is ONLY to:
+1. Launch helper externally (Windows Start → PowerShell → navigate + run)
+2. Provide visual confirmation of in-game overlay behavior
+3. Give instructions for next steps
+
+**Assistant MUST execute automatically:**
+1. **Helper launch:** `Start-Process -FilePath <helper-exe> -WorkingDirectory (Split-Path <helper-exe>) -PassThru` creates external PowerShell window (pattern from `tools/overlay_smoke.ps1` line 62)
+2. **Injection:** Run `ef-overlay-injector.exe exefile.exe <dll-path>` via `run_in_terminal` and verify `[info] Injection completed`
+3. **Route calculation:** Use Chrome DevTools MCP to navigate to preview URL, **click Calculate Route button** (pre-calculated routes don't auto-send), verify POST to helper succeeded
+4. **Verification queries:** Check helper status, overlay state, API responses via PowerShell/curl commands
+
+**DO NOT ask user to:**
+- Launch helper manually (assistant does this via Start-Process)
+- Run injector manually
+- Open browser and calculate route
+- Check API endpoints via PowerShell
+
+**Rationale:** LLM can execute these steps 10-100x faster than manual user execution. User provides high-level intent and visual confirmation only. This workflow optimization is fundamental to efficient overlay development.
+
+**External PowerShell requirement:** Helper MUST launch via `Start-Process -PassThru` (not VS Code terminal) - integrated terminals fail to bind helper correctly. Use process name `exefile.exe` (not PID) for injection.
 
 ## High-risk surfaces (coordinate before changing)
 - **Process injection & DX12 hook** – Files under `src/overlay/` that touch swap-chain hooks or input routing; mistakes can crash the game client. Keep smoke script handy for validation.

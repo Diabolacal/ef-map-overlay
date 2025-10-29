@@ -26,6 +26,34 @@ namespace helper::logs
 {
     namespace
     {
+        // Load custom log base path from registry (returns empty if not set)
+        std::string loadCustomLogBasePathFromRegistry()
+        {
+            HKEY hKey;
+            if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\EF Map Overlay\\Settings", 0, KEY_READ, &hKey) != ERROR_SUCCESS)
+            {
+                return {};
+            }
+
+            wchar_t buffer[MAX_PATH];
+            DWORD bufferSize = sizeof(buffer);
+            
+            std::string result;
+            if (RegQueryValueExW(hKey, L"LogBasePath", nullptr, nullptr, reinterpret_cast<LPBYTE>(buffer), &bufferSize) == ERROR_SUCCESS)
+            {
+                // Convert wide string to UTF-8
+                int utf8Count = WideCharToMultiByte(CP_UTF8, 0, buffer, -1, nullptr, 0, nullptr, nullptr);
+                if (utf8Count > 0)
+                {
+                    result.resize(utf8Count - 1);  // -1 to exclude null terminator
+                    WideCharToMultiByte(CP_UTF8, 0, buffer, -1, result.data(), utf8Count, nullptr, nullptr);
+                }
+            }
+            
+            RegCloseKey(hKey);
+            return result;
+        }
+
         std::uint64_t to_ms(const std::chrono::system_clock::time_point& tp)
         {
             if (tp.time_since_epoch().count() == 0)
@@ -159,6 +187,21 @@ namespace helper::logs
                 }
             }
             lastEvent_ = event.timestamp;
+            
+            // Add sparkline sample (cumulative damage at this timestamp)
+            CombatDamageSample sample;
+            sample.timestampMs = to_ms(event.timestamp);
+            sample.damageDealt = totalDamageDealt_;
+            sample.damageTaken = totalDamageTaken_;
+            sparklineBuffer_.push_back(sample);
+            
+            // Prune old sparkline samples
+            const auto sparklineCutoff = event.timestamp - sparklineWindow_;
+            while (!sparklineBuffer_.empty() && 
+                   sparklineBuffer_.front().timestampMs < to_ms(sparklineCutoff))
+            {
+                sparklineBuffer_.pop_front();
+            }
         }
 
         std::optional<CombatTelemetrySnapshot> snapshot(const std::chrono::system_clock::time_point& now)
@@ -230,6 +273,11 @@ namespace helper::logs
             return snapshot;
         }
 
+        std::vector<CombatDamageSample> getSparklineBuffer() const
+        {
+            return std::vector<CombatDamageSample>(sparklineBuffer_.begin(), sparklineBuffer_.end());
+        }
+
         void reset()
         {
             recent_.clear();
@@ -251,6 +299,9 @@ namespace helper::logs
             standardTaken_ = 0;
             penetratingTaken_ = 0;
             smashingTaken_ = 0;
+            
+            // Clear sparkline buffer
+            sparklineBuffer_.clear();
         }
 
         void restoreSession(const CombatTelemetrySnapshot& persisted)
@@ -316,6 +367,10 @@ namespace helper::logs
         std::uint64_t standardTaken_{0};
         std::uint64_t penetratingTaken_{0};
         std::uint64_t smashingTaken_{0};
+        
+        // Sparkline buffer (high-granularity samples, 120s retention)
+        std::deque<CombatDamageSample> sparklineBuffer_;
+        static constexpr std::chrono::seconds sparklineWindow_{120};
     };
 
     class LogWatcher::MiningTelemetryAggregator
@@ -346,6 +401,20 @@ namespace helper::logs
             totalVolume_ += stored.volumeM3;
             lastEvent_ = stored.timestamp;
             sessionBuckets_[stored.resource] += stored.volumeM3;
+            
+            // Add sparkline sample (cumulative volume at this timestamp)
+            MiningRateSample sample;
+            sample.timestampMs = to_ms(stored.timestamp);
+            sample.volumeM3 = totalVolume_;
+            sparklineBuffer_.push_back(sample);
+            
+            // Prune old sparkline samples
+            const auto sparklineCutoff = stored.timestamp - sparklineWindow_;
+            while (!sparklineBuffer_.empty() && 
+                   sparklineBuffer_.front().timestampMs < to_ms(sparklineCutoff))
+            {
+                sparklineBuffer_.pop_front();
+            }
         }
 
         std::optional<MiningTelemetrySnapshot> snapshot(const std::chrono::system_clock::time_point& now)
@@ -433,6 +502,11 @@ namespace helper::logs
             return snapshot;
         }
 
+        std::vector<MiningRateSample> getSparklineBuffer() const
+        {
+            return std::vector<MiningRateSample>(sparklineBuffer_.begin(), sparklineBuffer_.end());
+        }
+
         void reset()
         {
             recent_.clear();
@@ -440,6 +514,7 @@ namespace helper::logs
             lastEvent_ = std::chrono::system_clock::time_point{};
             sessionBuckets_.clear();
             sessionStart_ = std::chrono::system_clock::time_point{};
+            sparklineBuffer_.clear();
         }
 
         void restoreSession(const MiningTelemetrySnapshot& persisted)
@@ -502,6 +577,10 @@ namespace helper::logs
         std::chrono::system_clock::time_point lastEvent_{};
         std::map<std::string, double> sessionBuckets_;
         std::chrono::system_clock::time_point sessionStart_{};
+        
+        // Sparkline buffer (high-granularity samples, 120s retention)
+        std::deque<MiningRateSample> sparklineBuffer_;
+        static constexpr std::chrono::seconds sparklineWindow_{120};
     };
 
     class LogWatcher::TelemetryHistoryAggregator
@@ -766,7 +845,8 @@ namespace helper::logs
                 }
                 else
                 {
-                    spdlog::warn("Loop snapshot MISSING mining data!");
+                    // Mining data not available yet - expected early in session or when not mining
+                    spdlog::debug("Loop snapshot MISSING mining data (not yet initialized)");
                 }
             }
 
@@ -1555,6 +1635,39 @@ namespace helper::logs
         followModeSupplier_ = std::move(supplier);
     }
 
+    void LogWatcher::reloadLogPaths()
+    {
+        std::lock_guard<std::mutex> guard(mutex_);
+        
+        // Load custom base path from registry
+        std::string customBasePath = loadCustomLogBasePathFromRegistry();
+        
+        if (customBasePath.empty())
+        {
+            // Clear overrides to use default Documents\Frontier\logs
+            spdlog::info("[LogWatcher] Resetting to default log paths");
+            config_.chatDirectoryOverride.reset();
+            config_.combatDirectoryOverride.reset();
+        }
+        else
+        {
+            // Set overrides to custom base path + subfolders
+            std::filesystem::path basePath(customBasePath);
+            config_.chatDirectoryOverride = basePath / L"ChatLogs";
+            config_.combatDirectoryOverride = basePath / L"GameLogs";
+            spdlog::info("[LogWatcher] Custom log path set: {}", customBasePath);
+        }
+        
+        // Clear current directories to force re-discovery
+        status_.chatDirectory.clear();
+        status_.combatDirectory.clear();
+        chatTail_.reset({});
+        combatTail_.reset({});
+        
+        // Wake up the worker thread to re-discover directories
+        cv_.notify_one();
+    }
+
     bool LogWatcher::followModeEnabled() const
     {
         if (followModeSupplier_)
@@ -1589,6 +1702,10 @@ namespace helper::logs
         {
             summary.history = std::move(historySnapshot);
         }
+        
+        // Include high-granularity sparkline buffers
+        summary.combatSparkline = combatTelemetryAggregator_->getSparklineBuffer();
+        summary.miningSparkline = miningTelemetryAggregator_->getSparklineBuffer();
 
         status_.telemetry = summary;
         return summary;
@@ -1657,21 +1774,49 @@ namespace helper::logs
     {
         std::lock_guard<std::mutex> guard(mutex_);
         
-        spdlog::info("LogWatcher::forcePublish() called");
+        spdlog::info("LogWatcher::forcePublish() called - triggering immediate parse");
         
-        if (status_.telemetry.mining.has_value())
+        // If logs haven't been parsed yet, parse them NOW before publishing
+        // This ensures we have player location even on first publish after startup
+        if (!status_.location.has_value())
         {
-            spdlog::info("Before publish: mining has {:.1f} m3", status_.telemetry.mining->totalVolumeM3);
+            spdlog::info("No location found yet - running immediate parse cycle");
+            
+            // Discover directories if not done yet
+            if (status_.chatDirectory.empty())
+            {
+                discoverDirectories();
+            }
+            
+            // Refresh and process chat log immediately
+            if (refreshChatFile())
+            {
+                spdlog::info("Chat file refreshed: {}", status_.chatFile.string());
+            }
+            processLocalChat();
+            
+            if (status_.location.has_value())
+            {
+                spdlog::info("Location found after immediate parse: {} ({})", 
+                    status_.location->systemName, status_.location->systemId);
+            }
+            else
+            {
+                spdlog::warn("Still no location after immediate parse");
+            }
         }
         else
         {
-            spdlog::warn("Before publish: mining is EMPTY!");
+            spdlog::info("Location already available: {} ({})", 
+                status_.location->systemName, status_.location->systemId);
         }
         
-        // Don't regenerate snapshots - just publish what's already in status_
-        // This preserves restored session data that was set by restoreMiningSession()
+        if (status_.telemetry.mining.has_value())
+        {
+            spdlog::info("Mining telemetry: {:.1f} m3", status_.telemetry.mining->totalVolumeM3);
+        }
         
-        // Force publish the current state
+        // Force publish the current state (now with location if available)
         publishStateIfNeeded(status_, true);
         
         spdlog::info("Forced state publish completed");

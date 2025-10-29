@@ -132,6 +132,31 @@ namespace overlay
             entry.display_name = read_string(node, "display_name");
             entry.distance_ly = read_double(node, "distance_ly");
             entry.via_gate = read_bool(node, "via_gate", false);
+            entry.via_smart_gate = read_bool(node, "via_smart_gate", false);
+            
+            // Optional fields (backward compatibility)
+            if (node.contains("planet_count") && node.at("planet_count").is_number_integer())
+            {
+                entry.planet_count = node.at("planet_count").get<int>();
+            }
+            if (node.contains("network_nodes") && node.at("network_nodes").is_number_integer())
+            {
+                entry.network_nodes = node.at("network_nodes").get<int>();
+            }
+            if (node.contains("route_position") && node.at("route_position").is_number_integer())
+            {
+                entry.route_position = node.at("route_position").get<int>();
+            }
+            // Support both old (total_route_nodes) and new (total_route_hops) names for backward compatibility
+            if (node.contains("total_route_hops") && node.at("total_route_hops").is_number_integer())
+            {
+                entry.total_route_hops = node.at("total_route_hops").get<int>();
+            }
+            else if (node.contains("total_route_nodes") && node.at("total_route_nodes").is_number_integer())
+            {
+                entry.total_route_hops = node.at("total_route_nodes").get<int>();
+            }
+            
             state.route.push_back(std::move(entry));
         }
 
@@ -451,6 +476,82 @@ namespace overlay
             state.heartbeat_ms = state.generated_at_ms;
         }
 
+        // Session tracking state (backward compatible - defaults to false if not present)
+        state.visited_systems_tracking_enabled = read_bool(json, "visited_systems_tracking_enabled", false);
+        state.has_active_session = read_bool(json, "has_active_session", false);
+        if (json.contains("active_session_id") && !json.at("active_session_id").is_null())
+        {
+            state.active_session_id = json.at("active_session_id").get<std::string>();
+        }
+        
+        // Bookmark capability state (backward compatible)
+        state.authenticated = read_bool(json, "authenticated", false);
+        if (json.contains("tribe_id") && !json.at("tribe_id").is_null())
+        {
+            state.tribe_id = json.at("tribe_id").get<std::string>();
+        }
+        if (json.contains("tribe_name") && !json.at("tribe_name").is_null())
+        {
+            state.tribe_name = json.at("tribe_name").get<std::string>();
+        }
+
+        // Proximity scan data (backward compatible)
+        if (json.contains("pscan_data") && json.at("pscan_data").is_object())
+        {
+            const auto& pscanJson = json.at("pscan_data");
+            PscanData pscan;
+            
+            if (pscanJson.contains("system_id"))
+            {
+                pscan.system_id = pscanJson.at("system_id").get<std::string>();
+            }
+            if (pscanJson.contains("system_name"))
+            {
+                pscan.system_name = pscanJson.at("system_name").get<std::string>();
+            }
+            if (pscanJson.contains("scanned_at_ms"))
+            {
+                pscan.scanned_at_ms = pscanJson.at("scanned_at_ms").get<std::uint64_t>();
+            }
+            
+            if (pscanJson.contains("nodes") && pscanJson.at("nodes").is_array())
+            {
+                const auto& nodesJson = pscanJson.at("nodes");
+                pscan.nodes.reserve(nodesJson.size());
+                for (const auto& nodeJson : nodesJson)
+                {
+                    if (!nodeJson.is_object())
+                    {
+                        throw std::invalid_argument("pscan_data.nodes entries must be objects");
+                    }
+                    PscanNode node;
+                    if (nodeJson.contains("id"))
+                    {
+                        node.id = nodeJson.at("id").get<std::string>();
+                    }
+                    if (nodeJson.contains("name"))
+                    {
+                        node.name = nodeJson.at("name").get<std::string>();
+                    }
+                    if (nodeJson.contains("type"))
+                    {
+                        node.type = nodeJson.at("type").get<std::string>();
+                    }
+                    if (nodeJson.contains("owner_name"))
+                    {
+                        node.owner_name = nodeJson.at("owner_name").get<std::string>();
+                    }
+                    if (nodeJson.contains("distance_m"))
+                    {
+                        node.distance_m = nodeJson.at("distance_m").get<double>();
+                    }
+                    pscan.nodes.push_back(std::move(node));
+                }
+            }
+            
+            state.pscan_data = std::move(pscan);
+        }
+
         return state;
     }
 
@@ -466,12 +567,19 @@ namespace overlay
 
         for (const auto& node : state.route)
         {
-            route.push_back({
+            nlohmann::json nodeJson = {
                 {"system_id", node.system_id},
                 {"display_name", node.display_name},
                 {"distance_ly", node.distance_ly},
-                {"via_gate", node.via_gate}
-            });
+                {"via_gate", node.via_gate},
+                {"via_smart_gate", node.via_smart_gate},
+                {"planet_count", node.planet_count},
+                {"network_nodes", node.network_nodes},
+                {"route_position", node.route_position},
+                {"total_route_hops", node.total_route_hops}
+            };
+            
+            route.push_back(std::move(nodeJson));
         }
 
         json["route"] = std::move(route);
@@ -648,6 +756,55 @@ namespace overlay
             {
                 json["telemetry"] = std::move(telemetryJson);
             }
+        }
+
+        // Session tracking state
+        json["visited_systems_tracking_enabled"] = state.visited_systems_tracking_enabled;
+        json["has_active_session"] = state.has_active_session;
+        if (state.active_session_id.has_value())
+        {
+            json["active_session_id"] = *state.active_session_id;
+        }
+        
+        // Bookmark capability state
+        json["authenticated"] = state.authenticated;
+        if (state.tribe_id.has_value())
+        {
+            json["tribe_id"] = *state.tribe_id;
+        }
+        if (state.tribe_name.has_value())
+        {
+            json["tribe_name"] = *state.tribe_name;
+        }
+
+        // Proximity scan data
+        if (state.pscan_data.has_value())
+        {
+            const auto& pscan = *state.pscan_data;
+            nlohmann::json pscanJson = {
+                {"system_id", pscan.system_id},
+                {"system_name", pscan.system_name},
+                {"scanned_at_ms", pscan.scanned_at_ms}
+            };
+            
+            if (!pscan.nodes.empty())
+            {
+                nlohmann::json nodes = nlohmann::json::array();
+                nodes.get_ref<nlohmann::json::array_t&>().reserve(pscan.nodes.size());
+                for (const auto& node : pscan.nodes)
+                {
+                    nodes.push_back({
+                        {"id", node.id},
+                        {"name", node.name},
+                        {"type", node.type},
+                        {"owner_name", node.owner_name},
+                        {"distance_m", node.distance_m}
+                    });
+                }
+                pscanJson["nodes"] = std::move(nodes);
+            }
+            
+            json["pscan_data"] = std::move(pscanJson);
         }
 
         return json;

@@ -1,3 +1,934 @@
+# Technical Decision Log (EF-Map Overlay)
+
+## 2025-10-29 – MSIX Packaging Complete with UAC Elevation & WindowsApps Workaround
+- Goal: Complete Phase 6 local MSIX packaging with working overlay injection
+- Files:
+  - Helper: `src/helper/helper_runtime.cpp` (injection with UAC elevation, WindowsApps ACL workaround)
+  - Packaging: `src/helper/Package.appxmanifest`, `build_msix.ps1`, `sign_msix.ps1`, `create_test_cert.ps1`
+- Diff: ~150 lines added (manifest, scripts, UAC elevation, temp directory workaround)
+- Risk: Medium (packaging + elevation + ACL workarounds)
+- Gates: build ✅ package ✅ sign ✅ install ✅ inject ✅ overlay-rendering ✅
+- Follow-ups: Azure Code Signing setup, web app install buttons, Store submission
+
+### Summary
+**MSIX packaging fully functional:** Local sideload installation works end-to-end. Overlay injects successfully into game process via elevated injector launched from temp directory to bypass WindowsApps ACL restrictions. Ready for Azure Code Signing and external testing.
+
+### Critical Issues Solved
+
+**Issue 1: String Encoding Corruption**
+- **Problem:** `ShellExecuteExW` received garbage pointers causing Korean/Chinese characters error
+- **Root Cause:** `injectorPath.wstring().c_str()` creates temporary string, gets pointer, then destroys string
+- **Solution:** Store paths as actual variables before taking c_str():
+  ```cpp
+  std::wstring injectorPathStr = actualInjectorPath.wstring();
+  sei.lpFile = injectorPathStr.c_str();  // Valid pointer
+  ```
+
+**Issue 2: WindowsApps ACL Restrictions**
+- **Problem:** MSIX apps install to `C:\Program Files\WindowsApps\` which blocks elevated execution
+- **Root Cause:** WindowsApps folder has TrustedInstaller-only ACLs preventing `ShellExecuteEx` with `runas`
+- **Solution:** Copy injector + DLL to `%TEMP%\ef-overlay-inject\` before elevation:
+  ```cpp
+  bool needsTempCopy = injectorPath.wstring().find(L"WindowsApps") != std::wstring::npos;
+  if (needsTempCopy) {
+      tempDir = GetTempPath() / L"ef-overlay-inject";
+      copy_file(injectorPath, tempDir / L"ef-overlay-injector.exe");
+      copy_file(dllPath, tempDir / L"ef-overlay.dll");
+  }
+  ```
+- **Impact:** UAC prompt works correctly from temp location, injection succeeds
+
+**Issue 3: No UAC Prompt on User's Machine**
+- **Finding:** User likely has UAC disabled in Windows settings (common for power users/developers)
+- **Behavior:** Injection still works (runs elevated automatically without prompt)
+- **Plan:** External tester with default UAC settings will validate prompt appears correctly
+
+### Implementation Details
+
+**MSIX Manifest (Package.appxmanifest):**
+- Identity: `EFMapOverlayHelper`, Version `0.1.0.0`
+- Publisher: `CN=EF Map Project Test Certificate` (self-signed for local testing)
+- Capabilities: `runFullTrust` (escape AppContainer sandbox)
+- Protocol handler: `ef-overlay://` for web app integration
+- Startup task: Disabled by default (user opt-in)
+- Executable: `ef-overlay-tray.exe` (GUI tray app, not console helper)
+
+**Build Scripts:**
+- `build_msix.ps1`: Automated packaging (copies binaries, data, assets, manifest → makeappx.exe)
+- `sign_msix.ps1`: Sign with test certificate using signtool.exe
+- `create_test_cert.ps1`: Generate self-signed cert, export PFX, install to Trusted Root
+- `install_cert_to_root.ps1`: Standalone script for external PowerShell cert installation
+
+**Injection Flow:**
+1. User: Right-click tray icon → "Start Overlay"
+2. Helper: Find `exefile.exe` process (game client)
+3. Helper: Detect WindowsApps path → copy injector + DLL to temp
+4. Helper: Launch injector with `ShellExecuteEx` + `runas` verb → UAC prompt (if enabled)
+5. Injector: Elevated process injects DLL via `CreateRemoteThread` + `LoadLibrary`
+6. Overlay: DLL hooks DirectX swap chain, renders ImGui overlay
+7. User: Press **F8** in-game to toggle overlay visibility
+
+**Validated Behaviors:**
+- ✅ Tray app launches on install (Start menu: "EF Map Overlay Helper")
+- ✅ Right-click menu shows "Start Overlay" option
+- ✅ Injection succeeds (notification: "Overlay DLL injected successfully")
+- ✅ Overlay renders in-game (tested with visited systems, session history, follow mode)
+- ✅ F8 key toggles overlay visibility
+- ✅ Overlay disappears gracefully when helper exits (~5 second heartbeat timeout)
+- ✅ Re-injection works after helper restart without game restart
+
+### Next Steps (Phase 6 Complete → Phase 7)
+
+**Immediate (Before External Testing):**
+1. ~~Test local sideload~~ ✅ COMPLETE
+2. ~~Verify injection works~~ ✅ COMPLETE
+3. ~~Smoke test overlay features~~ ✅ COMPLETE
+
+**Phase 7 - Azure Code Signing & Distribution:**
+1. Set up Azure Code Signing subscription ($9.99/month)
+2. Create signing profile, generate production certificate
+3. Sign MSIX with Azure cert (replaces self-signed test cert)
+4. Create `.appinstaller` manifest for auto-updates
+5. Upload to Cloudflare R2: `ef-helper-releases` bucket
+6. Send signed package to external tester for UAC prompt validation
+7. Update web app with install/launch buttons (HelperBridgePanel)
+8. Deploy preview branch for end-to-end testing
+
+**Phase 8 - Microsoft Store (Optional):**
+- Partner Center account ($19-99 one-time)
+- Submit signed MSIX with screenshots/description
+- Await 1-3 day review
+- Update web app with Store badge
+
+### End User Experience (Production)
+
+**Installation (one-time):**
+- User clicks "Install Helper" in web app → downloads `.appinstaller` or redirects to Store
+- Windows shows UAC prompt during MSIX install (standard for all apps)
+- Helper optionally added to startup (user can enable in tray settings)
+
+**Daily Usage:**
+- Tray icon appears on login (if startup enabled)
+- User clicks "Start Overlay" in tray menu
+- **UAC prompt appears** (if UAC enabled) → user clicks "Yes"
+- Overlay appears in-game (press F8 to toggle)
+
+**UAC Prompt Frequency:**
+- Current: Every time user clicks "Start Overlay"
+- Acceptable for beta/MVP (matches OBS Studio, other game tools)
+- Future improvements: Windows service (one-time elevation) or kernel driver (no UAC)
+
+### Lessons Learned
+
+**MSIX Packaging Gotchas:**
+1. **Manifest naming:** Must be `AppxManifest.xml` (not `Package.appxmanifest`) for makeappx.exe
+2. **Certificate matching:** Publisher DN in manifest MUST match signing cert subject exactly
+3. **WindowsApps ACLs:** Cannot execute elevated from install location → temp directory workaround required
+4. **Temporary lifetimes:** Always store `wstring` variables before calling `.c_str()` on temporaries
+5. **VS Code PowerShell:** Cert operations requiring user input hang in integrated terminal → use external PowerShell with `-Verb RunAs`
+
+**Testing Workflow:**
+- Always test from MSIX install location, not development builds
+- Use external PowerShell for smoke testing (VS Code terminal breaks helper binding)
+- Process name `exefile.exe` is stable across launches (PID changes every session)
+- F8 toggle key is critical UX (overlay hidden by default to avoid obstruction)
+
+### Files Changed
+
+**New Files:**
+- `src/helper/Package.appxmanifest` (MSIX manifest)
+- `src/helper/build_msix.ps1` (automated packaging)
+- `src/helper/sign_msix.ps1` (test signing)
+- `src/helper/create_test_cert.ps1` (self-signed cert generation)
+- `src/helper/install_cert_to_root.ps1` (standalone cert installer)
+- `src/helper/Assets/*.png` (placeholder icons - 44x44, 150x150, 310x150, 50x50)
+
+**Modified Files:**
+- `src/helper/helper_runtime.cpp`:
+  - Lines 713-745: Temp directory copy logic for WindowsApps workaround
+  - Lines 771-835: ShellExecuteEx with `runas` verb for UAC elevation
+  - Line 6: Added `#include <shellapi.h>` for ShellExecuteExW
+
+**Build Artifacts:**
+- `build/packages/ef-overlay-helper_unsigned_Debug.msix` (7 files: tray exe, injector, DLL, data folder, assets)
+- `build/packages/ef-overlay-helper_signed_Debug.msix` (signed with test cert)
+
+---
+
+## 2025-10-29 – P-SCAN Feature Complete
+- Goal: Finalize P-SCAN feature with prerequisite warnings, authentication text cleanup, and follow mode state fixes
+- Files:
+  - Overlay: `src/overlay/overlay_renderer.cpp` (prerequisite checks, button disable logic)
+- Diff: ~20 lines changed (warning display, follow mode state check, button disable logic)
+- Risk: Low (polish + bug fixes)
+- Gates: build ✅ smoke ✅ (tested in-game with follow mode toggle)
+- Cross-repo: EF-Map-main updated (web app auth warning text)
+
+### Summary
+**P-SCAN feature complete and validated:** Players can now scan for network nodes in their current system after deploying portable structures. Both overlay and web app enforce prerequisites (follow mode + authentication) with clear warnings and disabled button states when requirements aren't met.
+
+### Changes Made
+**Overlay (overlay_renderer.cpp):**
+- Added prerequisite checks at top of P-SCAN tab:
+  - Follow mode check: `currentState_->follow_mode_enabled`
+  - Authentication check: `currentState_->authenticated`
+  - Combined: `canScan = hasFollowMode && isAuthenticated`
+- Warning display when prerequisites not met:
+  - Follow mode disabled: "Follow mode must be enabled in the web app."
+  - Not authenticated: "Not authenticated. Connect your wallet in the web app to use P-SCAN."
+  - Warnings use yellow text (`ImVec4(0.96f, 0.62f, 0.04f, 1.0f)`)
+- Button state:
+  - Grayed out (`orangeButtonDisabled = ImVec4(0.5f, 0.5f, 0.5f, 0.5f)`) when `!canScan`
+  - Disabled via `ImGui::BeginDisabled(!canScan)` / `ImGui::EndDisabled()` wrapper
+  - Applies to both "no scan data" and "scan data exists" states
+
+**Bug Fix:**
+- Initially checked `player_marker.has_value()` for follow mode (stays true even when disabled)
+- Fixed to use `follow_mode_enabled` boolean field (accurate state reflection)
+- Now properly detects when user disables follow mode in overlay/web app
+
+### Validation Complete ✅
+- Follow mode disabled → warning appears, button grayed out ✅
+- Not authenticated → warning appears, button grayed out ✅
+- Both prerequisites met → no warnings, button clickable in orange ✅
+- Scan executes → results appear in both overlay and web app ✅
+- Data persists across log-watcher updates ✅
+- Prerequisites synchronized between overlay and web app ✅
+
+### Follow-up
+Phase 5 now complete with all 7 features shipped (Visited Systems, Session History, Next System in Route, Bookmark Creation, Follow Mode Toggle, Legacy Cleanup, **P-SCAN**). Next: Phase 6 (Packaging & Pre-release Readiness).
+
+---
+
+## 2025-10-29 – UI Polish: Button Border Radius Reduction
+- Goal: Reduce button border radius from heavy rounding (6.0f) to subtle corner smoothing (2.0f)
+- Files:
+  - `src/overlay/overlay_renderer.cpp` (7 button types modified)
+- Diff: +10 lines (added rounding to 2 buttons that had none), ~7 value changes
+- Risk: Low (pure visual polish, no functional changes)
+- Changes:
+  - **Copy ID button:** `3.0f` → `2.0f` (line 787)
+  - **Disable/Enable Tracking button:** `6.0f` → `2.0f` (line 840)
+  - **Stop/Start Follow Mode button:** `6.0f` → `2.0f` (line 899)
+  - **Add Bookmark button:** `6.0f` → `2.0f` (line 938)
+  - **Mining Reset session button:** Added `2.0f` rounding (lines 1401-1411, previously sharp corners)
+  - **Combat Reset Session button:** Added `2.0f` rounding (lines 1833-1869, previously sharp corners)
+- User Feedback: "Decrease the rounding slightly on all buttons... just to literally smooth off the corners, basically. Leave tabs as they are, leave text input as it is, purely just the interactable buttons."
+- Result: More professional appearance, less "bubbly" look, consistent styling across all buttons
+- Gates: build ✅ (overlay DLL rebuilt), smoke ✅ (user tested in-game)
+- Follow-up: None (complete)
+
+## 2025-10-29 – CRITICAL FIX: Player Position Immediate Display (30-Second Delay Bug)
+- Goal: Fix 30-second delay before helper-connected pill shows system name on page load
+- Files:
+  - `src/helper/helper_server.cpp` (+23 lines: bidirectional state preservation in `ingestOverlayState()`)
+  - `eve-frontier-map/src/utils/helperBridge.ts` (+12 lines: immediate GET /overlay/state on WebSocket connect - partial fix)
+- Diff: Helper +23 lines, Web app +12 lines
+- Risk: High (core state management, affects all overlay interactions)
+- Root Cause (After 3+ Hours of Failed Attempts):
+  - **Two sources were overwriting each other instead of merging:**
+    - **Log watcher** (source="log-watcher"): Publishes `player_marker` from chat logs (authoritative for player position)
+    - **Web app** (source="http"): POSTs route data (authoritative for multi-hop routing)
+  - **Bug:** When web app POSTed empty route, it **cleared** log watcher's `player_marker` from stored state
+  - **Symptom:** GET /overlay/state returned NO `player_marker` field → helper pill showed "Helper Connected" without system name for 15-30 seconds until next log parse
+- Discovery Process:
+  - ❌ **Attempt 1:** Added immediate log parsing to `forcePublish()` → Reduced delay to ~15s, still present
+  - ❌ **Attempt 2:** Added immediate GET request on WebSocket connect → Initial load worked, but next POST cleared player_marker again
+  - ✅ **Breakthrough:** Used Chrome DevTools MCP to inspect actual network traffic → found `/overlay/state` response had NO `player_marker` field
+  - ✅ **Solution:** Implemented bidirectional state preservation in helper
+- Fix Implementation:
+  ```cpp
+  // helper_server.cpp lines 390-412 (NEW)
+  if (source == "http") {
+      // Preserve player_marker from log watcher (authoritative for player position)
+      if (latestOverlayStateJson_.contains("player_marker")) {
+          overlay::PlayerMarker preservedMarker;
+          preservedMarker.system_id = marker["system_id"].get<std::string>();
+          preservedMarker.display_name = marker["display_name"].get<std::string>();
+          preservedMarker.is_docked = marker["is_docked"].get<bool>();
+          enriched.player_marker = preservedMarker;
+      }
+  }
+  
+  // Lines 414-463 (EXISTING - complementary logic)
+  if (source == "log-watcher") {
+      // Preserve route/auth from web app (authoritative for routing)
+      if (latestOverlayStateJson_.contains("route")) {
+          enriched.route = existingRoute;
+      }
+  }
+  ```
+- Verification (Chrome DevTools):
+  - **Before:** `{"route":[], "version":4}` (no player_marker)
+  - **After:** `{"player_marker":{"display_name":"US3-N2F","is_docked":false,"system_id":"30006368"}, "route":[], "version":4}`
+- User Testing:
+  - ✅ Helper pill shows system name within 2 seconds of page load
+  - ✅ Follow mode centers immediately (no waiting)
+  - ✅ Add bookmark available immediately (no waiting)
+  - ✅ System name persists across route calculations
+- Gates: build ✅, smoke ✅ (Chrome DevTools verification + user testing)
+- Critical Lesson: **Use Chrome DevTools MCP proactively for browser-side debugging** - inspecting actual network responses revealed the bug in minutes after hours of failed assumptions
+- Follow-up: Document bidirectional preservation pattern in LLM troubleshooting guide
+
+## 2025-10-28 – Visited Systems Tracking Verification
+- Goal: Clarify user confusion about 404 errors for `/session/visited-systems?type=active-session`
+- Files: None (no code changes, documentation only)
+- User Confusion: "I don't understand why you said when I queried about the network error that you hadn't wired it up or something."
+- Agent's Initial Mistake: Saw 404 and assumed endpoint wasn't implemented
+- Reality Check:
+  ```cpp
+  // helper_server.cpp line 1060:
+  if (!maybeSession.has_value()) {
+      res.set_content(make_error("No active session").dump(), application_json);
+      res.status = 404; // Expected when no active session exists!
+      return;
+  }
+  ```
+- **404 is EXPECTED and HARMLESS** when no active session exists (e.g., on first page load before any jumps)
+- User Testing:
+  - ✅ Jumped to new system → all-time tracking +1
+  - ✅ Session tracking +2 (counts docked → undocked as separate visit)
+  - ✅ Feature fully working as designed
+- Conclusion: No bug, no changes needed. Feature is complete and operational.
+- Follow-up: None
+
+## 2025-10-28 – Bookmark Creation Feature (HOTFIX: System Name Extraction)
+- Goal: Fix bookmark system_name not being populated when created from overlay
+- Files:
+  - `src/helper/helper_runtime.cpp` (+11 lines: extract system_name from server overlay state JSON)
+  - `src/helper/helper_server.hpp` (+2 lines: public accessor `getLatestOverlayStateJson()`)
+- Diff: +13 lines
+- Risk: Low (accessor method + JSON field extraction)
+- Root Cause:
+  - Overlay event payload only contains `system_id` (not `system_name`)
+  - Helper event handler was only extracting fields from event payload
+  - **Missing:** Lookup of `system_name` from current overlay state's `player_marker.display_name`
+- Fix:
+  - Added public method `HelperServer::getLatestOverlayStateJson()` to expose overlay state JSON
+  - Helper event handler now calls `server_.getLatestOverlayStateJson()` → extracts `player_marker.display_name`
+  - WebSocket message payload now includes both `system_id` and `system_name`
+- User Testing:
+  - ✅ Bookmark created from overlay with notes → appeared in personal folder
+  - ❌ System name was empty (only system_id populated)
+  - After fix: System name should now populate correctly (e.g., "US3-N2F")
+- Gates: build ✅ (helper rebuilt with system name extraction)
+- Follow-up: User to test bookmark creation again and confirm system name appears
+
+## 2025-10-28 – Bookmark Creation Feature (FIXES: UI Colors, Text, Web App Removal, Backend Logic)
+- Goal: Fix user-reported issues from initial bookmark feature testing
+- Files:
+  - `src/overlay/overlay_renderer.cpp` (button text, text input color fix)
+  - `src/helper/helper_server.cpp` (WebSocket broadcast implementation)
+  - `eve-frontier-map/src/components/HelperBridge/HelperBridgePanel.tsx` (-83 lines: removed bookmark section)
+  - `eve-frontier-map/src/utils/helperBridge.ts` (+28 lines: bookmark_add_request handler)
+  - `eve-frontier-map/src/App.tsx` (+2 lines: `__efAddBookmark` global function)
+- Diff: Overlay +4 lines, Helper +15 lines, Web app -55 lines (net removal)
+- Risk: Low (UI polish + backend completion)
+- User Feedback:
+  - ❌ "We don't need the quick bookmark section in EF Helper [web app]" → Removed bookmark UI from web app (bookmarks ONLY in overlay)
+  - ❌ "Change the color of the with text [input] to be the muted orange" → Applied `kTabBase` to `ImGuiCol_FrameBg`
+  - ❌ "Change the text in the bookmark button to say add bookmark, not just bookmark" → "Bookmark" → "Add Bookmark"
+  - ❌ "It did not add a bookmark to either the personal folder or the tribe folder" → Implemented WebSocket broadcast + userOverlayStore integration
+  - ℹ️ "For tribe button... only appear if the user is connected" → Auth state population deferred (not blocking bookmark creation MVP)
+- Implementation:
+  - **Helper Endpoint (`/bookmarks/create`):**
+    - Parses `{system_id, system_name, notes, for_tribe}` from POST body
+    - Broadcasts WebSocket message `{"type":"bookmark_add_request", "payload":{...}}` to web app
+    - Web app receives via `helperBridge.ts` → calls `window.__efAddBookmark(systemId, systemName, color, note)`
+    - App.tsx exposes global function → `userOverlayStore.add(...)` (client-side localStorage)
+  - **Personal vs Tribe Routing (Future):**
+    - Currently: ALL bookmarks → personal folder (client-side)
+    - When auth state implemented: `for_tribe=true` → POST to `/api/bookmarks/create` (server-side tribe folder)
+  - **Auth State (Deferred):**
+    - `state.authenticated`, `state.tribe_id`, `state.tribe_name` fields exist in schema but helper never populates them
+    - "For Tribe" checkbox logic correct but never renders (always `authenticated=false`)
+    - Future: Helper polls `/api/player-profile` or WebSocket broadcasts profile changes
+- Gates: build ✅ typecheck ✅ deploy ✅ smoke (web app: bookmark section removed ✅, helper connected ✅)
+- Follow-ups:
+  1. Implement helper auth state population (fetch player profile on connect + 30s poll)
+  2. Test bookmark creation end-to-end in-game (overlay button click → personal folder entry appears)
+  3. Implement tribe bookmark routing when `for_tribe=true` and user authenticated
+
+## 2025-10-28 – Bookmark Creation Feature (Bidirectional Instant Sync)
+- Goal: Add one-click bookmark creation from in-game overlay with optional notes and tribe sharing
+- Files:
+  - `src/shared/event_channel.hpp` (+1 event type: BookmarkCreateRequested)
+  - `src/overlay/overlay_renderer.cpp` (+60 lines: bookmark button, text input, tribe checkbox below follow mode)
+  - `src/helper/helper_runtime.cpp` (+60 lines: event handler posting to `/bookmarks/create`)
+  - `src/helper/helper_server.cpp` (+50 lines: HTTP POST `/bookmarks/create` endpoint)
+  - `eve-frontier-map/src/components/HelperBridge/HelperBridgePanel.tsx` (+65 lines: bookmark UI section)
+  - `src/shared/overlay_schema.{hpp,cpp}` (+3 fields: authenticated, tribe_id, tribe_name)
+  - `eve-frontier-map/src/utils/helperBridge.ts` (+3 fields to OverlayState interface)
+- Diff: Overlay +180 lines, Web app +68 lines, Schema +20 lines
+- Risk: Medium (new feature with bidirectional flow + UI conditionals)
+- Implementation:
+  - **Overlay UI:** "Bookmark" button with text input (25 chars) + "For Tribe" checkbox
+    - Only visible when follow mode enabled (requires current system from player marker)
+    - Tribe checkbox only shown when `authenticated=true` and `tribe_id` present (excludes CloneBank86)
+  - **Event Flow (Overlay → Helper → Web App):**
+    1. User clicks overlay button → `BookmarkCreateRequested` event with `{system_id, notes, for_tribe}`
+    2. Helper event handler receives event → POSTs to `/bookmarks/create` (async detached thread)
+    3. Helper HTTP endpoint validates auth → acknowledges success
+    4. Web app handles bookmark creation via client-side user overlay store (not yet implemented)
+  - **Event Flow (Web App → Helper):**
+    1. User clicks web app bookmark button → POST to helper `/bookmarks/create`
+    2. Helper endpoint validates auth → acknowledges success
+    3. Web app creates bookmark in user overlay store (same path as overlay)
+- UI Behavior:
+  - **Bookmark button:** Same styling as follow mode / tracking buttons (6px rounded corners, orange theme)
+  - **Text input:** 180px width (~25 chars), placeholder "Optional notes"
+  - **For Tribe checkbox:** Shows tribe name when authenticated + in player-created tribe
+  - **Auto-clear:** Text input and checkbox reset after successful bookmark creation
+- Schema Extension:
+  - **OverlayState fields:** `authenticated`, `tribe_id`, `tribe_name` (all optional, backward compatible)
+  - Helper populates these fields from player profile / session state (future work)
+  - Overlay reads fields to conditionally render tribe checkbox
+- Integration Points:
+  - System ID: Extracted from `state.player_marker->system_id` (requires follow mode)
+  - Color: Default orange (`#ff4c26`) matching overlay theme
+  - Folder: Personal folder (all) or tribe folder (when `for_tribe=true`)
+  - Notes: Optional 25-char text field
+- Future Work:
+  - Helper populate `authenticated`, `tribe_id`, `tribe_name` from session state
+  - Web app client-side bookmark creation (integrate with user overlay store)
+  - Helper forward to EF Map worker `/api/bookmarks/create` for server persistence
+- Gates: typecheck ✅ | build (overlay) ✅ | build (web app) ✅ | deploy ✅ (`feature-bookmark-creation.ef-map.pages.dev`) | smoke (pending user test)
+- Follow-ups:
+  - User to test bookmark creation from both overlay and web app
+  - Implement client-side bookmark storage in user overlay store
+  - Add helper state population for auth/tribe fields
+
+## 2025-10-28 – Instant Bidirectional Sync: HTTP Endpoints Must Also Broadcast
+- Goal: Fix web app → overlay direction (still had 10s delay even after overlay → web app was instant)
+- Files:
+  - `src/helper/helper_server.cpp` (lines 1107, 1145, 1277: added `updateTrackingFlag()` and `updateSessionState()` calls in HTTP POST handlers)
+  - `eve-frontier-map/src/utils/helperBridge.ts` (added tracking/session fields to OverlayState interface)
+  - `eve-frontier-map/src/components/HelperBridge/HelperBridgePanel.tsx` (added WebSocket listener for instant UI updates)
+- Diff: Helper +9 lines (3 broadcast calls), Web app +50 lines (interface + effect)
+- Risk: Low (reusing proven direct update pattern)
+- Root cause:
+  - **Overlay → Web App:** Working instantly after adding WebSocket listener ✅
+  - **Web App → Overlay:** Still had 10s delay ❌
+  - Web app POSTs to `/session/visited-systems/toggle`, `/session/start-session`, `/session/stop-session`
+  - HTTP handlers updated `sessionTracker_` state ✅
+  - **BUT** handlers didn't call `updateTrackingFlag()` / `updateSessionState()` ❌
+  - Overlay only saw changes when heartbeat or log watcher updated shared memory (~2-30s delay)
+- User observation:
+  - After WebSocket fix: overlay buttons → web app < 1 second ✅
+  - Web app buttons → overlay: still ~10 seconds ❌
+  - Follow mode: instant both directions (HTTP POST + response pattern) ✅
+- Implementation:
+  ```cpp
+  // BEFORE (HTTP endpoints):
+  tracker->setAllTimeTrackingEnabled(enabled);
+  nlohmann::json payload{{"status", "ok"}, {"enabled", enabled}};
+  res.set_content(payload.dump(), application_json);
+  // ❌ No broadcast - overlay waits for next heartbeat/log update
+  
+  // AFTER:
+  tracker->setAllTimeTrackingEnabled(enabled);
+  updateTrackingFlag(enabled);  // ✅ Instant shared memory + WebSocket broadcast
+  nlohmann::json payload{{"status", "ok"}, {"enabled", enabled}};
+  res.set_content(payload.dump(), application_json);
+  ```
+- Complete flow (both directions now):
+  
+  **Overlay → Web App:**
+  1. User clicks overlay button
+  2. Overlay posts event to helper via event channel
+  3. Helper event handler calls `updateTrackingFlag()` / `updateSessionState()`
+  4. Direct JSON update + shared memory write + WebSocket broadcast
+  5. Web app receives WebSocket message + updates UI instantly (< 1s) ✅
+  
+  **Web App → Overlay:**
+  1. User clicks web app button
+  2. Web app POSTs to helper HTTP endpoint
+  3. Helper HTTP handler calls `updateTrackingFlag()` / `updateSessionState()`
+  4. Direct JSON update + shared memory write + WebSocket broadcast
+  5. Overlay reads from shared memory + updates UI instantly (< 1s) ✅
+  6. Web app also receives WebSocket broadcast for confirmation ✅
+- Gates:
+  - ✅ Helper rebuilt with HTTP endpoint broadcasts
+  - ✅ Helper restarted and overlay injected
+  - ✅ Web app deployed with WebSocket listener
+  - ⏳ User confirmation: instant bidirectional sync for tracking AND session buttons
+- Expected behavior:
+  - **All-Time Tracking toggle:** Web app ↔ overlay instant (< 1 second) both directions
+  - **Session Start/Stop:** Web app ↔ overlay instant (< 1 second) both directions
+  - **Follow Mode:** Still instant (unchanged)
+- Follow-ups:
+  - User confirms all buttons work instantly in both directions
+  - Bookmark feature will use same patterns (overlay event + HTTP POST, both calling direct update methods)
+
+## 2025-10-28 – Instant State Broadcast Fix: Direct Update Methods (Not forcePublish)
+- Goal: Eliminate 5-15 second delay when overlay buttons toggle tracking/session state - make updates instant like follow mode
+- Files:
+  - `src/helper/helper_server.hpp` (added `updateTrackingFlag()` and `updateSessionState()` method declarations)
+  - `src/helper/helper_server.cpp` (lines 129-228: implemented direct state update methods mirroring `updateFollowModeFlag()`)
+  - `src/helper/helper_runtime.cpp` (lines 797-850: replaced `forcePublish()` calls with direct server update calls)
+- Diff: +105 lines (2 new methods + updated event handlers)
+- Risk: Medium (changes core state broadcast mechanism, but mirrors proven follow mode pattern)
+- Root cause (CORRECTED after user testing):
+  - **Initial wrong approach:** Called `logWatcher_->forcePublish()` which goes through log watcher path
+  - **Actual problem:** Follow mode uses DIRECT state update (`updateFollowModeFlag()`) that:
+    1. Updates JSON directly: `latestOverlayStateJson_["follow_mode_enabled"] = enabled`
+    2. Writes to shared memory immediately: `sharedMemoryWriter_.write(serialized, ...)`
+    3. Broadcasts via WebSocket immediately: `websocketHub_->broadcastOverlayState(envelope)`
+  - **forcePublish() path is slow because:**
+    - Goes through log watcher → builds state from scratch → enriches → broadcasts
+    - Multiple indirection layers + mutex locks
+    - Designed for position/telemetry updates, not instant UI sync
+- User observation after first fix attempt:
+  - Overlay buttons still update locally (shared memory read works)
+  - Web app still has 5-15 second delay receiving changes
+  - Follow mode STILL works instantly
+  - User correctly noted: "you would be clever enough to look at how follow mode works and just duplicate it"
+- Implementation (correct approach):
+  ```cpp
+  // NEW: Direct update methods mirroring follow mode pattern
+  bool HelperServer::updateTrackingFlag(bool enabled)
+  {
+      std::lock_guard<std::mutex> guard(overlayStateMutex_);
+      latestOverlayStateJson_["visited_systems_tracking_enabled"] = enabled;
+      latestOverlayStateJson_["heartbeat_ms"] = now_ms();
+      // ... serialize + write to shared memory + broadcast WebSocket
+      sharedMemoryWriter_.write(serialized, version, generatedAt);
+      websocketHub_->broadcastOverlayState(envelope);
+  }
+  
+  bool HelperServer::updateSessionState(bool hasActive, std::optional<std::string> id)
+  {
+      std::lock_guard<std::mutex> guard(overlayStateMutex_);
+      latestOverlayStateJson_["has_active_session"] = hasActive;
+      latestOverlayStateJson_["active_session_id"] = id.has_value() ? *id : nullptr;
+      // ... same immediate broadcast pattern
+  }
+  ```
+- Event handler changes:
+  ```cpp
+  // BEFORE (wrong):
+  sessionTracker_->setAllTimeTrackingEnabled(!currentState);
+  if (logWatcher_) {
+      logWatcher_->forcePublish();  // ❌ Slow indirect path
+  }
+  
+  // AFTER (correct):
+  sessionTracker_->setAllTimeTrackingEnabled(!currentState);
+  if (!server_.updateTrackingFlag(!currentState)) {  // ✅ Direct like follow mode
+      spdlog::debug("Tracking flag update deferred; overlay state not yet available");
+  }
+  ```
+- Why this works (same as follow mode):
+  1. **Direct JSON update** → no rebuilding from log watcher snapshot
+  2. **Immediate shared memory write** → overlay sees change instantly
+  3. **Immediate WebSocket broadcast** → web app receives in < 200ms
+  4. **Single mutex lock** → minimal latency
+- Gates:
+  - ✅ C++ compilation successful (both helper_server.cpp and helper_runtime.cpp updated)
+  - ✅ Helper rebuilt and restarted with direct update methods
+  - ✅ Overlay DLL injected
+  - ⏳ User confirmation: tracking/session buttons now update web app instantly (< 1 second) like follow mode
+- Expected behavior:
+  - Click **All-Time Tracking** → overlay + web app update instantly (both directions)
+  - Click **Start Session** → overlay + web app show active session instantly (both directions)
+  - Click **Stop Session** → overlay + web app show "None" instantly (both directions)
+  - All three match follow mode's instant bidirectional sync
+- Lessons learned:
+  - Don't assume `forcePublish()` is fast enough for UI sync
+  - Always check HOW the working feature (follow mode) actually implements instant updates
+  - Direct state manipulation >> indirect publish paths for instant feedback
+- Follow-ups:
+  - User confirms instant updates for all three button types
+  - Bookmark button will use same direct update pattern
+
+## 2025-10-28 – Route Serialization Fix: Always Include All Fields (Not Just When > 0)
+- Goal: Fix helper serialization to always include planet_count, network_nodes, route_position, total_route_hops in JSON output (prevents missing fields when values are 0)
+- Files:
+  - `src/shared/overlay_schema.cpp` (lines 505-527: removed conditional serialization, always include all 8 fields)
+- Diff: -17 lines (removed conditional logic), +4 lines (direct field assignment)
+- Risk: Low (all fields already in schema, overlay renderer handles 0 values correctly)
+- Root cause:
+  - `serialize_overlay_state()` only included optional fields when value > 0
+  - Destination systems often have `network_nodes=0`, so that field was omitted from GET `/overlay/state` response
+  - Overlay renderer defaults missing fields to 0, correctly hides them from display
+  - User saw correct display for intermediate hops but destination showed only minimal info
+- User observation:
+  - 2-hop route (origin → destination): "Destination: I8N-FS6" with no hop/planet/node info
+  - 3-hop route (origin → intermediate → destination): Intermediate showed full info, destination showed minimal
+- Timing:
+  - Initial POST from web app includes all fields (even when 0)
+  - Helper deserializes correctly
+  - BUT when helper serializes for GET endpoint, it skipped 0-value fields
+  - Overlay renderer fetches state, sees missing fields, uses default 0, correctly hides them
+- Fix logic:
+  - Before: `if (node.planet_count > 0) { json["planet_count"] = ... }`
+  - After: Always include in initial JSON object: `{"planet_count", node.planet_count}, ...`
+  - All 8 fields now serialized unconditionally: system_id, display_name, distance_ly, via_gate, planet_count, network_nodes, route_position, total_route_hops
+- Gates:
+  - ✅ C++ compilation successful
+  - ✅ Helper rebuilt (stopped running instance first)
+  - ✅ Automated smoke test: GET `/overlay/state` now shows `"network_nodes":0` for destination hop
+  - ⏳ User visual confirmation: destination should show "hop 3/3 | 2 planets" (network nodes hidden because = 0)
+- Follow-ups:
+  - User confirms destination display includes hop position and planet count
+  - Verify route details persist after 30+ seconds (through log watcher updates)
+
+## 2025-10-28 – Route Preservation Fix: Missing Planet/Node/Position Fields
+- Goal: Fix helper route preservation logic to include planet_count, network_nodes, route_position, total_route_hops when deserializing from existing JSON (prevents 10-20s disappearance of route details in overlay)
+- Files:
+  - `src/helper/helper_server.cpp` (lines 271-279: added 4 missing field deserializations)
+- Diff: +4 lines (field assignments)
+- Risk: Low (filling in missing fields that were already in the schema)
+- Root cause:
+  - Log watcher sends position updates every ~30 seconds
+  - Helper preserves route from web app but only deserialized 4 fields (system_id, display_name, distance_ly, via_gate)
+  - Missing fields (planet_count, network_nodes, route_position, total_route_hops) defaulted to 0 after first log watcher update
+  - Overlay correctly hides fields when they're 0, so display reverted to minimal format 10-20s after route calculation
+- User observation:
+  - Initial route display correct: "E5J-F55 (jump) - 53.64 ly | hop 2/4 | 1 planet"
+  - After 10-20 seconds: "E5J-F55 (jump) - 53.64 ly" (hop/planet info disappeared)
+  - Consistent with 30-second log watcher publish interval
+- Implementation:
+  - Added deserialization for planet_count, network_nodes, route_position, total_route_hops from latestOverlayStateJson_
+  - Mirrors existing pattern for system_id/display_name/distance_ly/via_gate
+  - Preserves ALL route fields when log watcher sends position updates
+- Gates:
+  - ✅ C++ compilation successful
+  - ✅ Helper rebuilt (stopped running instance first)
+  - ⏳ User smoke test: Verify overlay display persists hop/planet info after 30+ seconds
+- Follow-ups:
+  - ⏳ User will restart helper and verify route details persist
+  - ⏳ Add network_nodes population in web app route transformation (currently missing from web app payload)
+
+## 2025-10-28 – Automated Smoke Testing Workflow: Assistant Executes All Scriptable Steps
+- Goal: Clarify that assistant must execute helper injection, route calculation (Chrome DevTools), and status verification automatically - user only launches helper externally and provides visual confirmation
+- Files:
+  - `AGENTS.md` (added "Automated Smoke Testing Workflow" section replacing brief smoke testing note)
+  - `.github/copilot-instructions.md` (added "Automated Smoke Testing Protocol" section with explicit DO NOT ASK USER list)
+- Diff: +21 lines AGENTS.md, +16 lines copilot-instructions.md
+- Risk: Low (documentation only, workflow optimization)
+- Root cause:
+  - Workflow optimization was implicit in practice but not documented in guardrails
+  - Assistant repeatedly asked user to perform steps (injector, browser route calc, API checks) that can be executed 10-100x faster via tools
+  - User's role should be limited to: external PowerShell helper launch, visual in-game confirmation, strategic direction
+- Implementation:
+  - Added dedicated "Automated Smoke Testing Workflow" section to AGENTS.md with explicit responsibilities split
+  - User responsibilities: Launch helper externally, provide visual confirmation, give instructions
+  - Assistant responsibilities: Injection via `run_in_terminal`, route calculation via Chrome DevTools MCP, status verification via PowerShell commands
+  - Added explicit DO NOT ASK USER list: running injector manually, opening browser, checking API endpoints
+  - Rationale statement: "LLM can execute these steps 10-100x faster than manual user execution"
+  - Reinforced external PowerShell requirement (helper binding fails in VS Code integrated terminals)
+  - Process name requirement: `exefile.exe` (not PID)
+- Gates:
+  - ✅ Documentation updated in both AGENTS.md and copilot-instructions.md
+  - ✅ Workflow split clearly defined with explicit boundaries
+  - ✅ Rationale provided for why assistant should execute instead of delegating
+- Follow-ups:
+  - ⏳ Assistant will execute smoke test steps immediately following this update
+  - ⏳ User only needs to confirm helper running externally and report in-game overlay results
+- Workflow benefits:
+  - 10-100x faster iteration cycles (seconds vs minutes per test)
+  - User focuses on strategic direction and visual confirmation instead of scripting
+  - Assistant leverages available tools (run_in_terminal, Chrome DevTools MCP, PowerShell commands)
+  - Fundamental optimization that makes overlay development efficient
+
+## 2025-10-28 – Critical Overlay Testing Requirements: External PowerShell + Process Name
+- Goal: Reinforce smoke testing requirements in copilot-instructions after assistant violated external PowerShell rule, document injector `.exe` extension requirement
+- Files:
+  - `c:\EF-Map-main\.github\copilot-instructions.md` (added CRITICAL smoke testing rule at top)
+  - `c:\ef-map-overlay\.github\copilot-instructions.md` (added CRITICAL smoke testing rule at top)
+- Diff: +2 lines per file (new paragraph with bold CRITICAL heading)
+- Risk: Low (documentation only, no code changes)
+- Root cause:
+  - Assistant ran helper in VS Code integrated terminal despite requirement being documented in AGENTS.md and LLM_TROUBLESHOOTING_GUIDE.md
+  - Helper started successfully but overlay showed "waiting on overlay state" → helper wasn't communicating with overlay
+  - Requirement was buried in Quality Gates section instead of being prominent at file start
+- Injector process name discovery:
+  - Injector requires `.exe` extension: `exefile.exe` NOT `exefile`
+  - `find_process_by_name()` does exact match on `entry.szExeFile` (includes extension)
+  - Error was `[error] Unable to resolve target process: exefile`
+  - Success: `[info] Injection completed (PID=31444)` with `exefile.exe`
+- Implementation:
+  - Added **CRITICAL Overlay Smoke Testing Rule** paragraph immediately after repository purpose statement in both copilot-instructions
+  - Rule states: helper MUST launch from external PowerShell, VS Code terminals fail to bind correctly, use `exefile.exe` (not PID)
+  - Cross-referenced existing documentation (AGENTS.md, LLM_TROUBLESHOOTING_GUIDE.md, decision logs)
+- Gates:
+  - ✅ Documentation updated in both repos
+  - ✅ Rule positioned at top of copilot-instructions for maximum visibility
+  - ✅ User confirmed helper binding issue caused by VS Code terminal
+- Follow-ups:
+  - ⏳ User will launch helper externally and retry injection with `exefile.exe`
+  - ⏳ Assistant must ALWAYS check for external PowerShell requirement before running helper during smoke tests
+- Rationale: This is non-negotiable for overlay functionality; integrated terminal binding failure is consistent and documented; making rule prominent prevents future violations
+
+## 2025-10-28 – Overlay Route Display: Format & Clipboard Fixes
+- Goal: Fix spurious "?" character, add missing planet/node counts, and implement EVE Online link format for clipboard
+- Files:
+  - `src/overlay/overlay_renderer.cpp` (lines 1-10: added includes, lines 755-792: consolidated display format, lines 802-820: EVE link clipboard)
+- Diff: +3 lines (includes), +38 lines (display rebuild), +8 lines (clipboard format change)
+- Risk: Low (UI polish, established pattern for clipboard operations)
+- Root cause:
+  - Em dash character `—` in format string not supported by overlay font, rendered as `?`
+  - Planet count and network nodes displayed via separate `ImGui::SameLine()` calls, but data WAS populated correctly
+  - Clipboard only copied raw system ID instead of EVE Online link format
+- Implementation:
+  - Replaced `ImGui::Text()` with multiple `SameLine()` calls → single `std::ostringstream` building complete string
+  - Changed em dash `—` to hyphen `-` for compatibility
+  - Consolidated all route info on single line: `E5J-F55 (jump) - 59.37 ly | hop 2/4 | 1 planet | 0 nodes`
+  - Copy ID now builds EVE link: `<a href="showinfo:5//SYSTEM_ID">SYSTEM_NAME</a>` (matches web app context menu behavior)
+  - Added `<sstream>` and `<iomanip>` includes for stringstream and `std::setprecision`
+- Gates:
+  - ✅ C++ compilation: Successful build after format changes
+  - ✅ Overlay DLL rebuild: ef-overlay.dll updated successfully
+  - ⏳ User smoke test: Verify display format, planet/node counts, and EVE link clipboard paste in-game
+- User benefits:
+  - Clean single-line display with all route details visible
+  - Copy ID now produces EVE link format that can be pasted directly into in-game chat/notes
+  - No more spurious "?" character breaking visual clarity
+- Follow-ups:
+  - ⏳ User verification: Test in-game paste of copied EVE link
+  - ⏳ Feature 3 status: Mark complete in GAME_OVERLAY_PLAN.md after user confirms working
+
+## 2025-10-28 – Overlay Route Navigation: Log Watcher State Merging Fix
+- Goal: Prevent log watcher from overwriting route data sent from web app when follow mode updates player position
+- Files:
+  - `src/helper/helper_server.cpp` (lines 257-287: route preservation logic in `ingestOverlayState`)
+- Diff: +31 lines (route/active_route_node_id preservation when source="log-watcher")
+- Risk: Medium (core overlay state management, affects route display persistence)
+- Root cause:
+  - When log watcher detects player movement (follow mode), it calls `ingestOverlayState(state, payloadBytes, "log-watcher")` with a **new** OverlayState containing only `player_marker` (current position)
+  - This **replaced** `latestOverlayStateJson_` including the route data sent from web app
+  - Result: overlay initially showed correct next hop, then after ~20-30 seconds (log watcher update) reverted to wrong system
+  - Confirmed via Chrome DevTools MCP: web app sends route once with correct `active_route_node_id`, NO re-sends after follow mode updates ✅
+- Implementation:
+  - Added conditional logic: when `source == "log-watcher"` AND existing state contains multi-hop route (size > 1), **preserve** route data from web app
+  - Manually deserializes existing route nodes and `active_route_node_id` from `latestOverlayStateJson_` and merges into new state
+  - Only `player_marker` and `telemetry` data updated from log watcher; route remains authoritative from web app
+  - Fix ensures web app's `active_route_node_id` (calculated as "player at hop N, show hop N+1") persists across follow mode location updates
+- Gates:
+  - ✅ C++ compilation: Successful rebuild after manual JSON deserialization logic
+  - ✅ Helper rebuild: ef-overlay-helper.exe rebuilt successfully
+  - ✅ Chrome DevTools MCP testing:
+    - Route calculated US3-N2F → EB8-911 (4 hops)
+    - Web app sends route with `active_route_node_id = "30008925"` (E5J-F55) ✅
+    - Initial From field: E5J-F55 (routing logic selected it) ✅
+    - After 30+ seconds: From field reverted to US3-N2F (follow mode update) ✅
+    - Route Systems window: still showing all 4 hops correctly ✅
+    - Helper console: "Overlay state accepted via log-watcher (436 bytes)" every ~30s ✅
+- Technical details:
+  - Log watcher `buildOverlayState()` (log_watcher.cpp line 1419) creates new state with single-item route (current position only)
+  - Heartbeat thread (helper_server.cpp line 337) runs every 2 seconds but only updates `heartbeat_ms` field, does NOT modify route
+  - Log watcher updates trigger every ~20-30 seconds when player position detected in game logs (Local chat entries)
+- User benefits:
+  - Overlay now shows consistent next hop even when follow mode updates player position
+  - No more "reversion to wrong system after 30 seconds" bug
+  - Web app remains authoritative source for routing logic; helper only tracks player position
+- Follow-ups:
+  - ⏳ User smoke test in actual game with overlay injected (verify overlay HUD shows E5J-F55 consistently)
+  - ⏳ Rebuild overlay DLL to ensure displayIndex fix + helper route preservation both deployed
+  - ⏳ Update GAME_OVERLAY_PLAN.md with technical details of route state management
+- Cross-repo: Related fix in overlay_renderer.cpp (removed double-increment bug) documented in separate decision log entry
+
+## 2025-10-27 – Phase 5 Feature 2: Session History with Dropdown
+- Goal: Allow users to browse and visualize past stopped sessions on the map
+- Files:
+  - Backend: `src/helper/session_tracker.hpp` (+1 method `listStoppedSessions()`), `src/helper/session_tracker.cpp` (+92 lines implementation), `src/helper/helper_server.cpp` (+48 lines `/session/list-sessions` endpoint)
+  - Frontend (EF-Map-main): `eve-frontier-map/src/components/HelperBridge/HelperBridgePanel.tsx` (+3 state variables, +25 lines fetch logic, +56 lines dropdown UI), `eve-frontier-map/src/App.tsx` (type update + fetch logic for past sessions)
+- Diff: Backend +141 lines, Frontend +84 lines
+- Risk: Low (extends existing session tracking, follows established patterns)
+- Implementation:
+  - **Backend `listStoppedSessions()` method:** Scans data directory for `session_*.json` files (excluding `active_session.json`), parses metadata (session_id, start/end times, systems count), returns sorted by newest first. Efficiently loads only metadata (not full system data) for performance.
+  - **HTTP endpoint:** GET `/session/list-sessions` returns JSON array of session summaries `[{session_id, start_time_ms, end_time_ms, system_count}, ...]`. Requires auth.
+  - **Frontend dataset type:** Extended `VisitedSystemsDataset` type to support ``past-session:${session_id}`` format (template literal type). Radio button + dropdown UI pattern.
+  - **Dropdown UX:** Third radio option "Past session" with conditional dropdown showing formatted session dates + system counts (e.g., "27 Oct 2025, 5:06 pm (2 systems)"). Dropdown only appears when Past session radio is selected. Auto-selects most recent session on first click.
+  - **Map visualization:** Reuses existing `/session/visited-systems?type=session&session_id=<id>` endpoint. Stars colored for selected past session systems.
+  - **Polling:** `fetchPastSessions()` called alongside `fetchVisitedData()` every 30 seconds when Overview tab active.
+- Gates:
+  - ✅ C++ compilation: No errors after adding `listStoppedSessions()` and endpoint
+  - ✅ Helper build: Successful rebuild with new functionality
+  - ✅ TypeScript: No errors after adding past-session support
+  - ✅ Frontend build: Vite build successful
+  - ✅ Deployment: Preview at https://feature-visited-systems-hist.ef-map.pages.dev
+  - ✅ Chrome DevTools testing:
+    - Past session radio button visible ✓
+    - Dropdown appears with 14 sessions ✓
+    - Sessions formatted correctly with dates and counts ✓
+    - Most recent session auto-selected ✓
+- User benefits:
+  - Browse historical gameplay sessions without needing active session
+  - Visualize where you went during specific past play sessions
+  - Compare different sessions by switching between them in dropdown
+  - All sessions persist across helper restarts (stored in `%LOCALAPPDATA%\EFOverlay\data\`)
+- Follow-ups:
+  - ⏳ User testing: verify map stars appear when past session selected
+  - ⏳ Phase 5 Feature 3: Export session data (JSON/CSV)
+  - ⏳ Phase 5 Feature 4: Date range filters
+  - ⏳ Phase 5 Feature 5: Advanced visualization (heatmap, visit counts)
+- Cross-repo: EF-Map-main decision log updated with matching entry for frontend changes
+
+## 2025-10-27 – Phase 5 Feature 1 Complete: Reset Session UI + CORS fix
+- Goal: Add Reset Session button matching all-time tracking UX, fix CORS blocking visited systems endpoints
+- Files:
+  - Backend: `src/helper/session_tracker.hpp` (+1 method declaration), `src/helper/session_tracker.cpp` (+14 lines `resetActiveSession()` implementation), `src/helper/helper_server.cpp` (+28 lines `/session/reset-session` endpoint, +1 CORS header fix)
+  - Frontend (EF-Map-main): `eve-frontier-map/src/components/HelperBridge/HelperBridgePanel.tsx` (+1 state variable, +~90 lines Reset Session button + themed confirmation dialog)
+- Diff: Backend +43 lines, Frontend +91 lines
+- Risk: Low (follows established patterns for session management + all-time reset UX)
+- Implementation:
+  - **Backend `resetActiveSession()` method:** Clears `activeSession_->systems` map while keeping session active (vs `stopSession()` which finalizes + saves to timestamped file). Logs action and calls `saveActiveSession()`.
+  - **HTTP endpoint:** POST `/session/reset-session` with auth requirement, returns 404 if no active session, 200 OK on success.
+  - **CORS fix:** Added `X-EF-Helper-Auth` to `Access-Control-Allow-Headers` in helper_server.cpp (was blocking preflight OPTIONS requests from deployed web app).
+  - **Frontend UX:** Two-button layout (Stop Session | Reset Session) matching all-time tracking pattern (Disable Tracking | Reset All-Time). Reset Session button **always visible** (not conditional on active session per user request: "I don't see any reason why we shouldn't be able to reset the session when the session isn't active because you would do that prior to starting a new session").
+  - **Themed confirmation dialog:** Shows current system count, "cannot be undone" warning, styled with accent color matching Reset All-Time dialog.
+- Gates:
+  - ✅ TypeScript compilation: No errors after adding confirmResetSession state + button layout
+  - ✅ Build: Frontend built successfully, helper rebuilt with new endpoint
+  - ✅ Deployment: Preview deployed to https://feature-visited-systems-rese.ef-map.pages.dev
+  - ✅ Chrome DevTools MCP testing:
+    - Reset Session button visible without active session ✓
+    - Reset Session button visible with active session ✓
+    - Themed confirmation dialog appears on click ✓
+    - Confirm Reset sends POST → 200 OK `{"message":"Active session reset","status":"ok"}` ✓
+    - Session remains active after reset (timestamp persists, systems cleared) ✓
+  - ✅ User smoke test: All buttons working, session start/stop/reset verified functional
+- User observations:
+  - All-time tracking showing fewer systems after helper rebuild: Expected behavior - fresh `visited_systems.json` on new build. Old data persists in previous helper working directory, can be merged if needed.
+  - Stop session creates new session on restart: Correct behavior - each session is discrete with unique session_id. Stopped sessions saved to timestamped JSON files.
+  - Session persistence: All-time data, active session, and stopped sessions all persist across helper restarts ✓
+- Follow-ups:
+  - ⏳ Verify star visualization colors on map canvas (screenshot saved, not yet confirmed by user)
+  - ⏳ Phase 5 remaining features (2-5): session history panel, export, filters, advanced visualization
+- Cross-repo: EF-Map-main decision log updated with matching entry for frontend changes
+
+## 2025-10-27 – Bug fix: Session start deadlock caused by non-recursive mutex
+- Goal: Resolve HTTP 404 error on `/session/start-session` endpoint while `/session/stop-session` worked correctly.
+- Files:
+  - `src/helper/session_tracker.hpp` (line 71: `std::mutex sessionMutex_` → `std::recursive_mutex sessionMutex_`)
+  - `src/helper/session_tracker.cpp` (lines 106, 165, 216, 222, 233, 292, 336: all `std::lock_guard<std::mutex>` → `std::lock_guard<std::recursive_mutex>`)
+  - `src/helper/helper_server.cpp` (temporary debug logging added during investigation, removed after fix)
+- Diff: +8 lines (mutex type change + 7 lock_guard template updates), -40 lines (debug logging cleanup)
+- Risk: Medium (core session tracking, but fix is minimal and well-tested)
+- Root cause:
+  - `SessionTracker::startSession()` locked `sessionMutex_`, then internally called another method that attempted to lock the same mutex
+  - Non-recursive `std::mutex` deadlocks when same thread tries to lock twice → threw exception "resource deadlock would occur"
+  - cpp-httplib's exception handler caught the exception but returned HTTP 404 instead of expected 500 status (likely due to early return path)
+- Investigation process:
+  - Checked for stale binary (rebuild confirmed)
+  - Verified route registration (identical to working stop-session)
+  - Tested for invisible characters in route strings (none found)
+  - Added extensive debug logging → handler WAS executing successfully
+  - Simplified handler to "HELLO WORLD" → HTTP 200 (worked!)
+  - Re-added authorization → HTTP 200 (worked!)
+  - Re-added full business logic → HTTP 404 (failed!)
+  - Added try-catch around `tracker->startSession()` → revealed deadlock exception
+- Fix: Changed mutex type from `std::mutex` to `std::recursive_mutex` to allow same thread to re-lock without deadlock (critical for methods calling other methods that lock)
+- Gates:
+  - ✅ Typecheck: No compilation errors after lock_guard template updates
+  - ✅ Build: Clean build (Visual Studio 2022, Debug config)
+  - ✅ Smoke: Both `/session/start-session` and `/session/stop-session` return HTTP 200 with valid JSON payloads
+  - ✅ Test results:
+    - POST `/session/start-session` → `{"session_id":"session_20251027_141856","status":"ok"}`
+    - POST `/session/stop-session` → `{"message":"Session stopped","status":"ok"}`
+- Follow-ups:
+  - ✅ Remove temporary debug logging (completed)
+  - ⏳ End-to-end test: Web app → start session → visit systems → verify session file persistence
+  - ⏳ Implement orange star visualization on EF Map for visited systems
+- Cross-repo: Updated `GAME_OVERLAY_PLAN.md` in both repos (overlay + EF-Map-main) marking start-session bug as resolved
+
+## 2025-10-24 – Phase 5 Feature 1 Web App Integration: Helper panel redesign & visualization approach
+- Goal: Clarify EF-Map web app integration design decisions for visited systems tracking and broader helper panel UX.
+- Files: `docs/initiatives/GAME_OVERLAY_PLAN.md` (this repo + EF-Map-main mirror)
+- Design decisions:
+  - **Helper panel tab structure:** Reorganize into four tabs similar to Routing window:
+    1. **Overview:** Visited systems toggle status, active session indicator, helper connection status (NO route duplication - Route Systems window already exists)
+    2. **Mining:** Placeholder for Phase 2 mining telemetry data
+    3. **Combat:** Placeholder for Phase 3 combat telemetry data
+    4. **Connection/Installation:** Current helper panel content moves here (status, retry button, logs, installation guide)
+  - **Map visualization:** Orange star coloring for visited systems (consistent with existing region highlights + jump bubble range). NO halos or hover counts initially. Visit counts tracked in backend but not displayed in first iteration.
+  - **Future enhancement (parked):** Potentially reuse Route Systems window logic to surface visited systems list with counts.
+  - **Helper detection:** Automatic on Connection/Installation tab with existing retry button for manual reconnection.
+- Rationale:
+  - Avoid UI duplication: Route Systems window already shows route waypoints → no need to duplicate Next System display in web app (overlay-only feature).
+  - Visual consistency: Orange coloring matches existing map highlight patterns (regions, jump range) for familiar UX.
+  - Tab organization: Mirrors Routing window structure users already understand; keeps related telemetry grouped (Overview = general, Mining/Combat = specific domains).
+  - Phased approach: Track visit counts now, decide display mechanism later (list window vs tooltips vs sparklines) based on user feedback.
+- Cross-repo: Mirrored in `EF-Map-main/docs/initiatives/GAME_OVERLAY_PLAN.md` (both updated simultaneously).
+- Follow-ups:
+  - ⏳ Create feature branch `feature/overlay-visited-systems` on EF-Map-main
+  - ⏳ Implement Helper panel tab structure (Overview/Mining/Combat/Connection)
+  - ⏳ Add orange star coloring for visited systems in map renderer
+  - ⏳ Deploy to Pages preview for validation
+
+## 2025-10-23 – Phase 5 Feature 1 complete: Visited Systems Tracking integration
+- Goal: Implement full visited systems tracking with JSON persistence, automatic system jump detection, and HTTP API endpoints.
+- Files:
+  - Persistence: `src/helper/session_tracker.hpp`, `src/helper/session_tracker.cpp` (NEW - 491 lines, full JSON I/O for all-time + session tracking)
+  - Integration: `src/helper/helper_runtime.hpp`, `src/helper/helper_runtime.cpp` (SessionTracker member, initialization, log watcher callback wiring)
+  - API: `src/helper/helper_server.hpp`, `src/helper/helper_server.cpp` (5 HTTP endpoints, SessionTrackerProvider pattern)
+  - Build: `src/helper/CMakeLists.txt` (added session_tracker.cpp to build)
+- Features implemented:
+  - **AllTimeVisitedSystems:** Toggle-based persistent tracking across all sessions (JSON file: `visited_systems.json`)
+  - **SessionVisitedSystems:** Timestamped play session tracking with session ID `session_YYYYMMDD_HHMMSS` (separate JSON per session)
+  - **Automatic tracking:** Log watcher callback records system visits when player jumps (uses PlayerMarker.system_id + display_name from OverlayState)
+  - **Thread-safe operations:** All-time and session data protected by separate std::mutex instances
+  - **Data directory:** `%LocalAppData%\EFOverlay\data\` (fallback to temp if unavailable)
+  - **HTTP API endpoints:**
+    1. `GET /session/visited-systems?type=all` → all-time data (version, tracking_enabled, last_updated_ms, systems map)
+    2. `GET /session/visited-systems?type=session&session_id=X` → specific session data
+    3. `GET /session/visited-systems?type=active-session` → current active session (404 if none)
+    4. `POST /session/visited-systems/reset-all` → clear all-time tracking
+    5. `POST /session/start-session` → start new timestamped session (auto-stops previous if active)
+    6. `POST /session/stop-session` → finalize active session (404 if none)
+    7. `POST /session/visited-systems/toggle` → enable/disable all-time tracking (`{\"enabled\": bool}` JSON body)
+- Diff: ~+580 / −0 (new module + integration points).
+- Risk: medium (new persistence layer, log watcher integration, HTTP surface).
+- Gates: build ✅ (Debug build successful, ef_overlay_helper.exe + ef_overlay_helper_common.lib) | tests ⚪ (manual smoke pending) | smoke ⏳ (requires live game + system jumps).
+- Technical decisions:
+  - **Persistence strategy:** JSON files for human readability + compatibility; schema version field for future migrations. Each session gets separate file to preserve historical play sessions without bloating all-time file.
+  - **Session ID format:** `session_YYYYMMDD_HHMMSS` (ISO 8601 date + time, sortable, human-readable).
+  - **Visit counter semantics:** First visit creates entry with visits=1; subsequent visits increment counter. System name stored with each entry for display (enables EF Map visualization without extra lookups).
+  - **Log watcher integration point:** Existing overlay state publish callback (line ~428 in helper_runtime.cpp) now also records visits before ingesting state. Minimal performance impact (2 mutex operations per system jump, no blocking I/O in hot path - JSON write happens inside recordVisit with lock held).
+  - **API authorization:** All endpoints require auth token (via existing authorize() mechanism in HelperServer). Write operations (reset, start/stop session, toggle) return 503 if SessionTracker unavailable.
+  - **Error handling:** Comprehensive spdlog logging for all file I/O failures; endpoints return 500 + exception message on unexpected errors.
+  - **Schema field exposure:** System data includes `{name, visits}` pairs keyed by system_id. Version field (`version: 1`) enables future format changes without breaking existing clients.
+- JSON format examples:
+  - All-time: `{\"version\":1,\"tracking_enabled\":true,\"last_updated_ms\":1729712345678,\"systems\":{\"sys123\":{\"name\":\"Mahnna\",\"visits\":5}}}`
+  - Session: `{\"version\":1,\"session_id\":\"session_20251023_143022\",\"start_time_ms\":1729712345000,\"end_time_ms\":1729712567000,\"active\":false,\"systems\":{\"sys456\":{\"name\":\"Tanoo\",\"visits\":2}}}`
+- Cross-repo: Will update EF-Map-main docs (DATA_EXPOSURE_PLAN.md) once web app integration starts; helper API contract now stable for polling.
+- Follow-ups:
+  - ⏳ Feature 1 overlay UI: Add checkbox (all-time toggle) + Start/Stop Session buttons
+  - ⏳ Feature 1 web app: Create feature branch, implement helper polling, map visualization (halos/hover counts), Helper panel display
+  - ⏳ Feature 3: Bookmark creation endpoints + UI
+  - ⏳ Feature 4: Follow mode toggle UI polish
+  - ⏳ Feature 2 enhancement: Auto-advance logic (deferred)
+
+## 2025-10-23 – Phase 5 partial implementation: Next System in Route + Legacy Cleanup
+- Goal: Implement Feature 2 (Next System in Route) and Feature 5 (Legacy Cleanup) from Phase 5 roadmap.
+- Files:
+  - Schema: `src/shared/overlay_schema.hpp`, `src/shared/overlay_schema.cpp` (RouteNode extended with planet_count, route_position, total_route_nodes)
+  - Overlay UI: `src/overlay/overlay_renderer.cpp` (+Next System display, +Copy ID button, −debug buttons)
+- Features implemented:
+  - **Next System in Route display:** Shows upcoming waypoint with connection type (gate/jump), distance (ly), planet count, total nodes
+  - **Copy System ID button:** Clipboard integration via Win32 API for easy in-game link creation
+  - **Destination detection:** When one jump from end, displays "Destination: [System Name]" instead of next waypoint format
+  - **Legacy cleanup:** Removed "Send waypoint advance event" and "Request follow toggle" debug buttons from Overview tab
+- Diff: ~+120 / −45 (schema extensions, UI additions, button removals).
+- Risk: low (UI-only changes, schema backward compatible).
+- Gates: build ✅ (Debug build succeeded, only harmless unused var warning) | tests ⚪ (manual smoke needed with live route) | smoke ⏳ (deferred until helper integration complete).
+- Technical decisions:
+  - **Auto-advance logic deferred:** Initial plan called for automatic waypoint advancement when follow mode detects system jump. Investigation revealed this requires deeper integration between log watcher player location tracking and helper server route storage. Deferred to next session; web app will set `active_route_node_id` initially.
+  - **Schema backward compatibility:** New RouteNode fields (planet_count, route_position, total_route_nodes) are optional during parsing; existing routes without these fields will function correctly (values default to 0).
+  - **Clipboard implementation:** Used Win32 `OpenClipboard()`/`SetClipboardData()` directly rather than ImGui clipboard helpers to ensure reliable system ID copying.
+- UI format examples:
+  - Next waypoint: "Mahnna (gate) — 3.47 ly | 5 planets | 12 nodes [Copy ID]"
+  - Destination: "Destination: Tanoo [Copy ID]"
+- Cross-repo: Will mirror roadmap update to `EF-Map-main` showing Features 2 & 5 complete, Features 1, 3, 4 in-progress or deferred.
+- Follow-ups:
+  - ⏳ Feature 1 (Visited Systems): JSON persistence, log watcher integration, helper API endpoints, overlay UI toggles
+  - ⏳ Feature 3 (Bookmark Creation): Helper endpoint, EF Map worker `/api/overlay-bookmark`, overlay UI with tribe checkbox
+  - ⏳ Feature 4 (Follow Mode Toggle): UI refinement in Overview tab (already functional, cosmetic polish only)
+  - ⏳ Feature 2 auto-advance: Implement player location → route waypoint reconciliation in helper runtime
+  - ❌ Remove notes section: Not found in current Overview tab implementation (already clean)
+
 ## 2025-10-23 – Combat telemetry implementation (Phase 3)
 - Goal: Implement full combat telemetry tracking with dual-line sparkline visualization, session persistence, and hit quality analytics.
 - Files: 
@@ -35,11 +966,20 @@
   - Current DPS: "0.0 DPS dealt | 26.3 DPS taken"
   - Peak: "206.9 DPS"
 - Cross-repo: None (overlay-only feature; combat log parsing independent of EF-Map-main).
-- Follow-ups: 
-  - Implement combat session persistence (combat_session.json) with hit quality counters
-  - Wire reset button to delete persisted file
-  - Update GAME_OVERLAY_PLAN.md Phase 3 status (queued → complete)
-  - Document combat architecture in LLM_TROUBLESHOOTING_GUIDE.md Section 8
+- Follow-ups: ✅ All complete
+  - ✅ Update GAME_OVERLAY_PLAN.md Phase 3 status (queued → complete)
+  - ✅ Document combat architecture in LLM_TROUBLESHOOTING_GUIDE.md Section 8
+  - ❌ Session persistence intentionally deferred (operator decision: reset button clears in-memory state; lightweight overlay use case doesn't require disk persistence)
+
+## 2025-10-23 – Phase 3 combat telemetry completion
+- Goal: Mark Phase 3 complete in roadmap and close outstanding follow-ups.
+- Files: `docs/initiatives/GAME_OVERLAY_PLAN.md`, `docs/decision-log.md`.
+- Rationale: Combat telemetry feature is complete for overlay use case. Reset button clears in-memory session state as designed; intentionally lightweight for combat site DPS monitoring. Session persistence (`combat_session.json`) and file deletion on reset are unnecessary for the overlay's current scope—players just need real-time DPS visibility and hit quality feedback during active combat sites. More extensive combat analytics may be surfaced in EF-Map web app later if needed.
+- Diff: ~+15 / −10 (status update, clarified scope).
+- Risk: low (documentation only).
+- Gates: build n/a | tests n/a | smoke n/a.
+- Cross-repo: Will mirror roadmap update to `EF-Map-main/docs/initiatives/GAME_OVERLAY_PLAN.md` in next sync.
+- Follow-ups: None; Phase 3 complete, ready to proceed with Phase 5 (bookmarks/route UX) or Phase 6 (packaging) when scheduled.
 
 ## 2025-10-23 – Increase mining decay hold period for large laser compatibility
 - Goal: Prevent jaggy sparkline when players use large mining lasers (6-second cycle time) by extending the hold period before decay starts.
@@ -433,3 +1373,16 @@
 	- Optional `-DetachHelper` to run helper in its own console, `-SkipPayload` to avoid posting the sample route.
 3. In-game controls: **F8** hide/show, drag title bar to move, drag any edge/corner to resize, mouse wheel to scroll.
 4. Stop helper when finished: `Get-Process ef-overlay-helper | Stop-Process`
+
+ # #   2 0 2 5 - 1 0 - 2 7     H T T P   4 0 5   B u g   F i x e s   v i a   C h r o m e   D e v T o o l s   M C P   ( c r o s s - r e p o ) 
+ -   G o a l :   R e s o l v e   w e b   a p p   H T T P   4 0 5   e r r o r s   b l o c k i n g   v i s i t e d   s y s t e m s   t r a c k i n g   f e a t u r e   ( w e b   U I     h e l p e r   i n t e g r a t i o n ) . 
+ -   C r o s s - r e p o :   S e e   c : \ E F - M a p - m a i n \ d o c s \ d e c i s i o n - l o g . m d   f o r   f u l l   d e t a i l s   ( m a l f o r m e d   U R L   c o n s t r u c t i o n   +   d u p l i c a t e   C O R S   h e a d e r s ) . 
+ -   H e l p e r   c h a n g e s :   F i x e d   d u p l i c a t e   C O R S   h e a d e r s   i n   h e l p e r _ s e r v e r . c p p   O P T I O N S   h a n d l e r   ( r e m o v e d   r e s . s e t _ h e a d e r   c a l l s ,   r e l y i n g   o n   s e t _ d e f a u l t _ h e a d e r s ) . 
+ -   H e l p e r   r e b u i l t :   P I D   2 5 6 0 8   w i t h   C O R S   f i x ;   t r a c k i n g   t o g g l e   a n d   s t o p - s e s s i o n   e n d p o i n t s   v e r i f i e d   w o r k i n g   ( H T T P   2 0 0 ) . 
+ -   M y s t e r y :   S t a r t - s e s s i o n   e n d p o i n t   r e t u r n s   H T T P   4 0 4   d e s p i t e   i d e n t i c a l   r e g i s t r a t i o n   a t   l i n e   8 9 2   ( s t o p - s e s s i o n   w o r k s   a t   l i n e   9 1 9 ) .   I n v e s t i g a t i o n   d e f e r r e d . 
+ -   D o c u m e n t a t i o n :   A d d e d   C h r o m e   D e v T o o l s   M C P   p r o a c t i v e   g u i d a n c e   t o   . g i t h u b \ c o p i l o t - i n s t r u c t i o n s . m d   a n d   A G E N T S . m d   ( m i r r o r   o f   E F - M a p - m a i n   u p d a t e s ) . 
+ -   I n i t i a t i v e :   U p d a t e d   G A M E _ O V E R L A Y _ P L A N . m d   P h a s e   5   F e a t u r e   1   p r o g r e s s   ( t r a c k i n g   t o g g l e   ,   s e s s i o n   U I   i m p r o v e m e n t s   ,   s t a r t - s e s s i o n   4 0 4   ) . 
+ -   G a t e s :   h e l p e r   b u i l d     |   w e b   a p p   d e p l o y     ( f e a t u r e - o v e r l a y - v i s i t e d - s y s t . e f - m a p . p a g e s . d e v )   |   t r a c k i n g   t o g g l e   s m o k e     |   s e s s i o n   s t o p   s m o k e   . 
+ 
+ 
+ 

@@ -68,6 +68,53 @@ namespace
         return result;
     }
 
+    HICON load_tray_icon()
+    {
+        // Try to load icon from MSIX package Assets folder
+        wchar_t exePath[MAX_PATH];
+        if (::GetModuleFileNameW(nullptr, exePath, MAX_PATH) > 0)
+        {
+            std::filesystem::path exeDir = std::filesystem::path(exePath).parent_path();
+            std::filesystem::path iconPath = exeDir / L"Assets" / L"Square44x44Logo.png";
+            
+            // Try loading as .ico file first (if we have one)
+            std::filesystem::path icoPath = exeDir / L"Assets" / L"app.ico";
+            if (std::filesystem::exists(icoPath))
+            {
+                HICON icon = static_cast<HICON>(::LoadImageW(
+                    nullptr,
+                    icoPath.wstring().c_str(),
+                    IMAGE_ICON,
+                    16, 16,  // Small icon size for tray
+                    LR_LOADFROMFILE | LR_DEFAULTCOLOR
+                ));
+                if (icon)
+                {
+                    return icon;
+                }
+            }
+            
+            // Fallback: try loading PNG as icon (Windows 10+ supports this)
+            if (std::filesystem::exists(iconPath))
+            {
+                HICON icon = static_cast<HICON>(::LoadImageW(
+                    nullptr,
+                    iconPath.wstring().c_str(),
+                    IMAGE_ICON,
+                    16, 16,
+                    LR_LOADFROMFILE | LR_DEFAULTCOLOR
+                ));
+                if (icon)
+                {
+                    return icon;
+                }
+            }
+        }
+        
+        // Fallback to default Windows application icon
+        return ::LoadIconW(nullptr, IDI_APPLICATION);
+    }
+
     std::wstring format_double(double value)
     {
         std::wostringstream oss;
@@ -198,7 +245,7 @@ void HelperTrayApplication::addTrayIcon()
     iconData_.uID = 1;
     iconData_.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     iconData_.uCallbackMessage = kTrayMessage;
-    iconData_.hIcon = ::LoadIconW(nullptr, IDI_APPLICATION);
+    iconData_.hIcon = load_tray_icon();
     ::wcscpy_s(iconData_.szTip, L"EF Overlay Helper");
 
     iconAdded_ = ::Shell_NotifyIconW(NIM_ADD, &iconData_) != FALSE;
@@ -252,7 +299,7 @@ void HelperTrayApplication::showContextMenu()
     ::InsertMenuW(menu, appendPos, MF_BYPOSITION | (running ? MF_ENABLED : MF_GRAYED), static_cast<UINT>(MenuId::Stop), L"Stop helper");
     ::InsertMenuW(menu, appendPos, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
     ::InsertMenuW(menu, appendPos, MF_BYPOSITION | MF_ENABLED, static_cast<UINT>(MenuId::SampleState), L"Post sample overlay state");
-    ::InsertMenuW(menu, appendPos, MF_BYPOSITION | MF_ENABLED, static_cast<UINT>(MenuId::Inject), L"Inject overlay (exefile.exe)");
+    ::InsertMenuW(menu, appendPos, MF_BYPOSITION | MF_ENABLED, static_cast<UINT>(MenuId::Inject), L"Start Overlay");
     ::InsertMenuW(menu, appendPos, MF_BYPOSITION | MF_ENABLED, static_cast<UINT>(MenuId::OpenLogs), L"Open logs folder");
     ::InsertMenuW(menu, appendPos, MF_BYPOSITION | MF_ENABLED, static_cast<UINT>(MenuId::CopyDiagnostics), L"Copy diagnostics to clipboard");
     ::InsertMenuW(menu, appendPos, MF_BYPOSITION | (running ? MF_ENABLED : MF_GRAYED), static_cast<UINT>(MenuId::OpenTelemetryHistory), L"Open telemetry history");

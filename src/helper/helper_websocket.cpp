@@ -148,6 +148,30 @@ namespace helper::ws
         {
         }
 
+        ~Client()
+        {
+            // Signal thread to exit
+            running.store(false);
+            
+            // Close socket to unblock any pending reads
+            asio::error_code ec;
+            socket.shutdown(asio::ip::tcp::socket::shutdown_both, ec);
+            socket.close(ec);
+            
+            // Wait for thread to exit (with timeout)
+            if (readerThread.joinable())
+            {
+                // Give thread a moment to exit gracefully
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                
+                // If still joinable, just detach to avoid blocking destructor
+                if (readerThread.joinable())
+                {
+                    readerThread.detach();
+                }
+            }
+        }
+
         asio::ip::tcp::socket socket;
         std::mutex writeMutex;
         std::thread readerThread;
@@ -299,13 +323,22 @@ namespace helper::ws
         {
             if (auto client = it->lock())
             {
-                if (!sendText(client, serialized))
+                try
                 {
-                    client->running.store(false);
-                    if (client->readerThread.joinable())
+                    if (!sendText(client, serialized))
                     {
-                        client->readerThread.join();
+                        client->running.store(false);
+                        // Don't join here - let client cleanup happen naturally or in stop()
+                        // Joining from broadcast thread can cause deadlock
+                        it = clients_.erase(it);
+                        continue;
                     }
+                }
+                catch (const std::exception& ex)
+                {
+                    spdlog::debug("[ws] broadcastJson exception for client {}: {}", client->remoteAddress, ex.what());
+                    client->running.store(false);
+                    // Don't join here - let client cleanup happen naturally or in stop()
                     it = clients_.erase(it);
                     continue;
                 }
@@ -327,13 +360,21 @@ namespace helper::ws
         {
             if (auto client = it->lock())
             {
-                if (!sendText(client, serialized))
+                try
                 {
-                    client->running.store(false);
-                    if (client->readerThread.joinable())
+                    if (!sendText(client, serialized))
                     {
-                        client->readerThread.join();
+                        client->running.store(false);
+                        // Don't join here - let client cleanup happen naturally or in stop()
+                        it = clients_.erase(it);
+                        continue;
                     }
+                }
+                catch (const std::exception& ex)
+                {
+                    spdlog::debug("[ws] broadcastOverlayState exception for client {}: {}", client->remoteAddress, ex.what());
+                    client->running.store(false);
+                    // Don't join here - let client cleanup happen naturally or in stop()
                     it = clients_.erase(it);
                     continue;
                 }
@@ -356,13 +397,21 @@ namespace helper::ws
         {
             if (auto client = it->lock())
             {
-                if (!sendText(client, serialized))
+                try
                 {
-                    client->running.store(false);
-                    if (client->readerThread.joinable())
+                    if (!sendText(client, serialized))
                     {
-                        client->readerThread.join();
+                        client->running.store(false);
+                        // Don't join here - let client cleanup happen naturally or in stop()
+                        it = clients_.erase(it);
+                        continue;
                     }
+                }
+                catch (const std::exception& ex)
+                {
+                    spdlog::debug("[ws] broadcastEventBatch exception for client {}: {}", client->remoteAddress, ex.what());
+                    client->running.store(false);
+                    // Don't join here - let client cleanup happen naturally or in stop()
                     it = clients_.erase(it);
                     continue;
                 }

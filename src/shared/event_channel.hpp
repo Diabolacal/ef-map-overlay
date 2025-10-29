@@ -20,6 +20,11 @@ namespace overlay
         FollowModeToggled = 2,
         WaypointAdvanced = 3,
         HudHintDismissed = 4,
+        VisitedSystemsTrackingToggled = 5,
+        SessionStartRequested = 6,
+        SessionStopRequested = 7,
+        BookmarkCreateRequested = 8,
+        PscanTriggerRequested = 9,
         CustomJson = 1000
     };
 

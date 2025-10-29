@@ -6,6 +6,7 @@ set(common_sources
     log_parsers.cpp
     log_watcher.cpp
     system_resolver.cpp
+    session_tracker.cpp
 )
 
 add_library(ef_overlay_helper_common STATIC ${common_sources})

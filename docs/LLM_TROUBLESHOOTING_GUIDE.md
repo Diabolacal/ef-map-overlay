@@ -2,6 +2,38 @@
 
 > **Purpose:** Give agents a fast, opinionated entry point for understanding the overlay helper project and diagnosing common failures without rereading the entire repository. Keep this document in sync with `AGENTS.md`, `.github/copilot-instructions.md`, and the initiative plan.
 
+## 0. CRITICAL: Chrome DevTools MCP for Web App Debugging
+**USE THIS FIRST for any browser-side debugging before making assumptions.**
+
+**Why:** After 3+ hours debugging the "30-second player position delay" bug with multiple failed attempts, the breakthrough came from using Chrome DevTools MCP to inspect actual network traffic. Revealed GET /overlay/state was returning NO `player_marker` field, leading directly to discovering the state overwrite bug in helper.
+
+**When to use:**
+- Web app not receiving expected data from helper
+- Helper endpoints returning unexpected JSON
+- Player position / route data not displaying
+- WebSocket messages not appearing
+- CORS errors or network issues
+- Any "why isn't the web app seeing X?" question
+
+**How to use:**
+1. Launch Chrome DevTools MCP session (isolated profile, no secrets)
+2. Navigate to preview URL or localhost
+3. Click buttons / trigger actions
+4. Inspect **actual** network responses (don't assume)
+5. Check Console for errors (don't rely on user screenshots)
+6. Verify API response shapes match expectations
+7. Close session when done
+
+**Real example from 2025-10-29:**
+```
+Assumption: "Helper must not be sending player_marker fast enough"
+Reality (via DevTools): GET /overlay/state returned {"route":[], "version":4} with NO player_marker field
+Root cause: Web app POST was clearing log watcher's player_marker from helper state
+Fix: Bidirectional state preservation (helper lines 390-412)
+```
+
+**Key lesson:** Inspecting real responses beats assumptions. Use DevTools MCP proactively, not as a last resort.
+
 ## 1. Quick orientation
 - **What lives here:** Windows helper app, DirectX 12 overlay DLL, injector utilities, log parsers, and packaging/tooling for the in-game overlay experience.
 - **What lives elsewhere:** Web UI, Cloudflare Worker APIs, and data preparation pipelines remain in `EF-Map-main`.
@@ -63,6 +95,50 @@ ctest -C Release --output-on-failure
 | Follow mode stuck | Check helper follow flag (`GET /session/state`), confirm chat parser reading latest log, ensure EF Map panel subscribed. | Inspect `EF-Map-main` usage logs, re-run helper with `--trace-follow` once implemented. |
 | Mining telemetry stale | Validate latest game log paths in helper diagnostics, ensure player mined during test. | Use `tools/log_tail.ps1` (future) to stream raw log lines; confirm parser regex still matches current client format. |
 | Protocol link no-op | Confirm `ef-overlay://` scheme registered (`--register-protocol`), check shared secret header, ensure browser not blocking custom scheme. | Examine Windows Event Viewer → Applications for handler launch failures. |
+| **Player position not showing (web app)** | **Use Chrome DevTools MCP to inspect GET /overlay/state response.** Check if `player_marker` field present. | **Verify bidirectional state preservation in helper (see section 4.1).** |
+| **Web app POST clearing helper state** | **Confirm helper preserves log watcher data when source="http".** Check helper logs for "Preserved player_marker" messages. | **Review `ingestOverlayState()` in helper_server.cpp lines 390-463.** |
+
+### 4.1 Bidirectional State Preservation Pattern (CRITICAL)
+**Problem:** Helper receives state updates from TWO sources that must NOT overwrite each other:
+- **Log watcher** (source="log-watcher"): Authoritative for `player_marker` (current position parsed from game logs)
+- **Web app** (source="http"): Authoritative for `route` (multi-hop routing calculated by EF Map)
+
+**Bug:** When web app POSTs route data, it was clearing log watcher's `player_marker`. When log watcher published position, it was clearing web app's `route`. Result: 30-second delays before player position appeared.
+
+**Solution (helper_server.cpp lines 390-463):**
+```cpp
+// When source = "http" (web app POST):
+if (source == "http") {
+    // Preserve player_marker from log watcher (authoritative for position)
+    if (latestOverlayStateJson_.contains("player_marker")) {
+        overlay::PlayerMarker preservedMarker;
+        preservedMarker.system_id = marker["system_id"].get<std::string>();
+        preservedMarker.display_name = marker["display_name"].get<std::string>();
+        preservedMarker.is_docked = marker["is_docked"].get<bool>();
+        enriched.player_marker = preservedMarker;
+        spdlog::debug("Preserved player_marker from log watcher");
+    }
+}
+
+// When source = "log-watcher":
+if (source == "log-watcher") {
+    // Preserve route from web app (authoritative for routing)
+    if (latestOverlayStateJson_.contains("route")) {
+        enriched.route = existingRoute; // Keep web app's multi-hop route
+    }
+}
+```
+
+**Verification:**
+```bash
+# Before fix:
+GET /overlay/state → {"route":[], "version":4}  # NO player_marker!
+
+# After fix:
+GET /overlay/state → {"player_marker":{"display_name":"US3-N2F",...}, "route":[], "version":4}
+```
+
+**Key lesson:** When multiple sources update the same state object, implement **explicit preservation** logic rather than blind overwrites. Each source should be authoritative for specific fields only.
 
 ## 5. Common tasks
 - **Update shared schema:** Edit `src/shared/` headers + helper/overlay serialization, regenerate any associated tests, document payload changes in both repos.

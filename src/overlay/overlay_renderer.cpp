@@ -3,10 +3,13 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <iomanip>
 #include <mutex>
+#include <sstream>
 #include <thread>
 #include <vector>
 
+#include <Windows.h>  // For clipboard operations
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <nlohmann/json.hpp>
@@ -650,7 +653,7 @@ void OverlayRenderer::renderImGui()
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
 
     const ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoCollapse;
-    const bool windowOpen = ImGui::Begin("EF-Map Overlay", nullptr, windowFlags);
+    const bool windowOpen = ImGui::Begin("EF-Map Overlay (F8)", nullptr, windowFlags);
     if (!windowOpen)
     {
         ImGui::End();
@@ -697,136 +700,314 @@ void OverlayRenderer::renderImGui()
         const overlay::TelemetryMetrics* telemetry = state.telemetry ? &*state.telemetry : nullptr;
 
         auto renderOverviewTab = [&]() {
-            ImGui::Separator();
-            ImGui::Text("Follow mode: %s", state.follow_mode_enabled ? "enabled" : "disabled");
-
-            if (state.notes.has_value())
+            // **Next System in Route** Feature (Horizontal Layout)
+            // Show route whenever one exists (user calculated it, they want to see it)
+            // Route display comes FIRST so follow mode button can be moved to bottom with other buttons
+            if (!state.route.empty())
             {
-                ImGui::Separator();
-                ImGui::TextWrapped("Notes: %s", state.notes->c_str());
-            }
-
-            ImGui::Separator();
-            ImGui::TextUnformatted("Route preview:");
-            const std::size_t maxRows = 12;
-            if (state.route.empty())
-            {
-                ImGui::TextDisabled("No route nodes loaded");
-            }
-            else
-            {
-                const std::size_t displayCount = std::min<std::size_t>(state.route.size(), maxRows);
-                for (std::size_t i = 0; i < displayCount; ++i)
+                // Find the hop to display based on active_route_node_id
+                // The web app ALREADY calculates the NEXT hop (currentHopIndex + 1)
+                // so we display it directly, NOT +1 again
+                int displayIndex = -1;
+                if (state.active_route_node_id.has_value())
                 {
-                    const overlay::RouteNode& node = state.route[i];
-                    ImGui::BulletText("%zu. %s (%s) -- %.2f ly %s",
-                        i + 1,
-                        node.display_name.c_str(),
-                        node.system_id.c_str(),
-                        node.distance_ly,
-                        node.via_gate ? "via gate" : "jump");
-                }
-
-                if (state.route.size() > maxRows)
-                {
-                    ImGui::Text("...and %zu more nodes", state.route.size() - maxRows);
-                }
-            }
-
-            if (state.active_route_node_id.has_value())
-            {
-                ImGui::Separator();
-                ImGui::Text("Active route node: %s", state.active_route_node_id->c_str());
-            }
-
-            if (eventWriterReady_.load())
-            {
-                ImGui::Separator();
-                ImGui::PushStyleColor(ImGuiCol_Button, kButtonBase);
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kButtonHover);
-                ImGui::PushStyleColor(ImGuiCol_ButtonActive, kButtonActive);
-
-                if (ImGui::Button("Send waypoint advance event"))
-                {
-                    overlay::OverlayEvent event;
-                    event.type = overlay::OverlayEventType::WaypointAdvanced;
-                    event.payload = nlohmann::json{{"source", "overlay"}, {"sent_ms", nowMsValue}}.dump();
-                    if (!eventWriter_.publish(event))
+                    for (size_t i = 0; i < state.route.size(); ++i)
                     {
-                        spdlog::warn("Failed to publish WaypointAdvanced event");
+                        if (state.route[i].system_id == *state.active_route_node_id)
+                        {
+                            displayIndex = static_cast<int>(i);
+                            break;
+                        }
                     }
                 }
+                
+                // If active_route_node_id not found or not provided, default to first hop
+                if (displayIndex < 0 && !state.route.empty()) {
+                    displayIndex = 0;
+                }
+                
+                // Only show if we have a valid hop to display
+                if (displayIndex >= 0 && displayIndex < static_cast<int>(state.route.size()))
+                {
+                    const overlay::RouteNode& displayNode = state.route[displayIndex];
+                    const bool isLastNode = (displayIndex == static_cast<int>(state.route.size()) - 1);
+                    
+                    // Add small padding above route info (no separator line)
+                    ImGui::Spacing();
+                    
+                    // Horizontal layout: "Next in route: Mahnna (gate) — 3.47 ly | hop 5/12 | 5 planets | 12 nodes  [Copy ID]"
+                    // Show full details for ALL hops (no "Destination:" prefix - user infers from hop count)
+                    ImGui::TextUnformatted("Next in route:");
+                    ImGui::SameLine();
+                    
+                    // Determine travel method display
+                    const char* travelMethod = "jump";
+                    if (displayNode.via_smart_gate)
+                    {
+                        travelMethod = "Smart Gate";
+                    }
+                    else if (displayNode.via_gate)
+                    {
+                        travelMethod = "Stargate";
+                    }
+                    
+                    // Build the display string with all available info
+                    std::ostringstream oss;
+                    oss << displayNode.display_name << " (" << travelMethod << ")";
+                    
+                    // Add distance
+                    oss << " - " << std::fixed << std::setprecision(2) << displayNode.distance_ly << " ly";
+                    
+                    // Add hop position
+                    if (displayNode.route_position > 0 && displayNode.total_route_hops > 0)
+                    {
+                        oss << " | hop " << displayNode.route_position << "/" << displayNode.total_route_hops;
+                    }
+                    
+                    // Add planet count
+                    if (displayNode.planet_count > 0)
+                    {
+                        oss << " | " << displayNode.planet_count << (displayNode.planet_count == 1 ? " planet" : " planets");
+                    }
+                    
+                    // Add network nodes
+                    if (displayNode.network_nodes > 0)
+                    {
+                        oss << " | " << displayNode.network_nodes << (displayNode.network_nodes == 1 ? " node" : " nodes");
+                    }
+                    
+                    ImGui::TextUnformatted(oss.str().c_str());
+                    
+                    ImGui::SameLine();
+                    
+                    // Copy System ID button (inline, with rounded corners and vertical alignment)
+                    ImGui::PushStyleColor(ImGuiCol_Button, kButtonBase);
+                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kButtonHover);
+                    ImGui::PushStyleColor(ImGuiCol_ButtonActive, kButtonActive);
+                    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 2.0f);  // Slightly rounded corners
+                    
+                    // Align button text with route line text by shifting up slightly
+                    const float textBaselineOffset = 2.0f;
+                    ImGui::SetCursorPosY(ImGui::GetCursorPosY() - textBaselineOffset);
+                    
+                    if (ImGui::Button("Copy ID"))
+                    {
+                        // Build EVE Online link format: <a href="showinfo:5//SYSTEM_ID">SYSTEM_NAME</a>
+                        std::ostringstream linkStream;
+                        linkStream << "<a href=\"showinfo:5//" << displayNode.system_id << "\">" << displayNode.display_name << "</a>";
+                        const std::string eveLink = linkStream.str();
+                        
+                        // Win32 clipboard implementation
+                        if (OpenClipboard(nullptr))
+                        {
+                            EmptyClipboard();
+                            const size_t size = eveLink.size() + 1;
+                            HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, size);
+                            if (hMem)
+                            {
+                                void* pMem = GlobalLock(hMem);
+                                if (pMem)
+                                {
+                                    memcpy(pMem, eveLink.c_str(), size);
+                                    GlobalUnlock(hMem);
+                                    SetClipboardData(CF_TEXT, hMem);
+                                }
+                            }
+                            CloseClipboard();
+                            spdlog::info("Copied EVE link to clipboard: {}", eveLink);
+                        }
+                        else
+                        {
+                            spdlog::warn("Failed to open clipboard");
+                        }
+                    }
+                    
+                    ImGui::PopStyleVar();     // FrameRounding
+                    ImGui::PopStyleColor(3);  // Button colors
+                }
+                
+                // Add small padding below route info (no separator line)
+                ImGui::Spacing();
+            }
 
-                ImGui::SameLine();
-                if (ImGui::Button("Request follow toggle"))
+            // **Visited Systems Tracking Controls**
+            ImGui::TextUnformatted("Visited Systems Tracking");
+            
+            // Read actual tracking state from helper (via shared memory)
+            const bool trackingEnabled = state.visited_systems_tracking_enabled;
+            const bool sessionActive = state.has_active_session;
+            
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 2.0f);  // Slightly rounded corners
+            ImGui::PushStyleColor(ImGuiCol_Button, kButtonBase);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kButtonHover);
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, kButtonActive);
+            
+            const char* trackingLabel = trackingEnabled ? "Disable Tracking" : "Enable Tracking";
+            if (ImGui::Button(trackingLabel, ImVec2(200, 0)))
+            {
+                spdlog::info("Tracking toggle clicked (current: {})", trackingEnabled);
+                if (eventWriterReady_.load())
+                {
+                    overlay::OverlayEvent event;
+                    event.type = overlay::OverlayEventType::VisitedSystemsTrackingToggled;
+                    event.timestamp_ms = static_cast<std::uint64_t>(
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::system_clock::now().time_since_epoch()).count());
+                    if (!eventWriter_.publish(event))
+                    {
+                        spdlog::warn("Failed to publish VisitedSystemsTrackingToggled event");
+                    }
+                }
+            }
+            
+            ImGui::SameLine();
+            ImGui::TextDisabled("Status: %s", trackingEnabled ? "Enabled" : "Disabled");
+            
+            ImGui::Spacing();
+            
+            const char* sessionLabel = sessionActive ? "Stop Session" : "Start Session";
+            if (ImGui::Button(sessionLabel, ImVec2(200, 0)))
+            {
+                spdlog::info("Session {} clicked (current active: {})", sessionActive ? "stop" : "start", sessionActive);
+                if (eventWriterReady_.load())
+                {
+                    overlay::OverlayEvent event;
+                    event.type = sessionActive ? overlay::OverlayEventType::SessionStopRequested 
+                                                : overlay::OverlayEventType::SessionStartRequested;
+                    event.timestamp_ms = static_cast<std::uint64_t>(
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::system_clock::now().time_since_epoch()).count());
+                    if (!eventWriter_.publish(event))
+                    {
+                        spdlog::warn("Failed to publish Session event");
+                    }
+                }
+            }
+            
+            ImGui::SameLine();
+            ImGui::TextDisabled("Session: %s", sessionActive ? "Active" : "None");
+            
+            ImGui::PopStyleColor(3);
+            ImGui::PopStyleVar();
+            
+            // **Follow Mode Toggle**
+            // Moved to bottom below tracking controls with larger spacing gap for visual separation
+            ImGui::Spacing();
+            ImGui::Spacing();
+            ImGui::Spacing();  // 3x spacing creates visible gap without separator line
+            
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 2.0f);  // Slightly rounded corners
+            ImGui::PushStyleColor(ImGuiCol_Button, kButtonBase);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kButtonHover);
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, kButtonActive);
+            
+            const char* followLabel = state.follow_mode_enabled ? "Disable Follow Mode" : "Enable Follow Mode";
+            if (ImGui::Button(followLabel, ImVec2(200, 0)))
+            {
+                spdlog::info("Follow mode toggle clicked (current: {})", state.follow_mode_enabled);
+                if (eventWriterReady_.load())
                 {
                     overlay::OverlayEvent event;
                     event.type = overlay::OverlayEventType::FollowModeToggled;
-                    event.payload = nlohmann::json{{"requested", true}}.dump();
+                    event.timestamp_ms = static_cast<std::uint64_t>(
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::system_clock::now().time_since_epoch()).count());
                     if (!eventWriter_.publish(event))
                     {
                         spdlog::warn("Failed to publish FollowModeToggled event");
                     }
                 }
-
-                ImGui::PopStyleColor(3);
             }
-            else
+            
+            ImGui::PopStyleColor(3);
+            ImGui::PopStyleVar();
+            ImGui::SameLine();
+            ImGui::TextDisabled("Status: %s", state.follow_mode_enabled ? "Enabled" : "Disabled");
+            
+            // **Bookmark Creation** (only visible when follow mode enabled)
+            if (state.follow_mode_enabled && state.player_marker.has_value())
             {
-                ImGui::Separator();
-                ImGui::TextColored(ImVec4(0.9f, 0.2f, 0.2f, 1.0f), "Event queue unavailable.");
-            }
-
-            if (state.player_marker.has_value())
-            {
-                ImGui::Separator();
-                const overlay::PlayerMarker& marker = *state.player_marker;
-                ImGui::Text("Player: %s (%s)%s",
-                    marker.display_name.c_str(),
-                    marker.system_id.c_str(),
-                    marker.is_docked ? " [Docked]" : "");
-            }
-
-            if (!state.highlighted_systems.empty())
-            {
-                ImGui::Separator();
-                ImGui::TextUnformatted("Highlights:");
-                ImGui::Indent();
-                for (const overlay::HighlightedSystem& highlight : state.highlighted_systems)
+                ImGui::Spacing();
+                ImGui::Spacing();
+                ImGui::Spacing();  // 3x spacing for visual separation
+                
+                static char bookmarkText[64] = "";  // Static buffer for text input (persists across frames)
+                static bool forTribe = false;
+                
+                // Bookmark button
+                ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 2.0f);  // Slightly rounded corners
+                ImGui::PushStyleColor(ImGuiCol_Button, kButtonBase);
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kButtonHover);
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, kButtonActive);
+                
+                if (ImGui::Button("Add Bookmark", ImVec2(200, 0)))
                 {
-                    ImGui::BulletText("%s (%s) [%s]", highlight.display_name.c_str(), highlight.system_id.c_str(), highlight.category.c_str());
-                    if (highlight.note.has_value())
+                    spdlog::info("Add Bookmark button clicked (system_id: {}, notes: {}, for_tribe: {})", 
+                                 state.player_marker->system_id, bookmarkText, forTribe);
+                    if (eventWriterReady_.load())
                     {
-                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.65f, 0.76f, 0.95f, 1.0f));
-                        ImGui::TextWrapped("%s", highlight.note->c_str());
-                        ImGui::PopStyleColor();
+                        overlay::OverlayEvent event;
+                        event.type = overlay::OverlayEventType::BookmarkCreateRequested;
+                        event.timestamp_ms = static_cast<std::uint64_t>(
+                            std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::system_clock::now().time_since_epoch()).count());
+                        
+                        // Build JSON payload: {system_id, notes, for_tribe}
+                        nlohmann::json payload;
+                        payload["system_id"] = state.player_marker->system_id;
+                        payload["notes"] = std::string(bookmarkText);
+                        payload["for_tribe"] = forTribe;
+                        event.payload = payload.dump();
+                        
+                        if (!eventWriter_.publish(event))
+                        {
+                            spdlog::warn("Failed to publish BookmarkCreateRequested event");
+                        }
+                        else
+                        {
+                            // Clear text input after successful publish
+                            bookmarkText[0] = '\0';
+                            forTribe = false;
+                        }
                     }
                 }
-                ImGui::Unindent();
-            }
-
-            if (state.camera_pose.has_value())
-            {
-                const overlay::CameraPose& pose = *state.camera_pose;
-                ImGui::Separator();
-                ImGui::Text("Camera position: (%.2f, %.2f, %.2f)", pose.position.x, pose.position.y, pose.position.z);
-                ImGui::Text("Camera look-at: (%.2f, %.2f, %.2f)", pose.look_at.x, pose.look_at.y, pose.look_at.z);
-                ImGui::Text("Camera FOV: %.1f\u00B0", pose.fov_degrees);
-            }
-
-            if (!state.hud_hints.empty())
-            {
-                ImGui::Separator();
-                ImGui::TextUnformatted("HUD hints:");
-                ImGui::Indent();
-                for (const overlay::HudHint& hint : state.hud_hints)
+                
+                ImGui::PopStyleColor(3);
+                ImGui::PopStyleVar();
+                
+                // Text input for notes (same line as button label continuation)
+                ImGui::SameLine();
+                ImGui::Text("with text");
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(180.0f);  // ~25 characters width
+                // Apply muted orange background to match unhovered tab theme
+                ImGui::PushStyleColor(ImGuiCol_FrameBg, kTabBase);
+                ImGui::InputText("##bookmark_notes", bookmarkText, sizeof(bookmarkText));
+                ImGui::PopStyleColor();
+                
+                // Tribe checkbox (show only if authenticated session exists)
+                // Routing logic happens in helper when bookmark is created (helper calls /api/player-profile)
+                const bool showTribeCheckbox = state.authenticated;
+                if (showTribeCheckbox)
                 {
-                    ImGui::BulletText("%s%s", hint.text.c_str(), hint.dismissible ? " (dismissible)" : "");
                     ImGui::SameLine();
-                    ImGui::TextDisabled("[%s]", hint.active ? "active" : "inactive");
+                    // Style checkbox with muted orange theme matching text input
+                    ImGui::PushStyleColor(ImGuiCol_FrameBg, kTabBase);  // Unchecked background
+                    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, kTabHover);  // Hover state
+                    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, kTabActive);  // Active/pressed state
+                    ImGui::PushStyleColor(ImGuiCol_CheckMark, ImVec4(1.0f, 0.6f, 0.4f, 1.0f));  // Checkmark color (lighter orange)
+                    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3.0f);  // Slight rounding
+                    const float checkboxSize = ImGui::GetFontSize();  // Match text size
+                    ImGui::Checkbox("For Tribe", &forTribe);
+                    ImGui::PopStyleVar();
+                    ImGui::PopStyleColor(4);
                 }
-                ImGui::Unindent();
             }
+            
+            // Legacy debug sections removed per Phase 5 Feature 5 (Legacy Cleanup):
+            // - Highlights (bookmarks/marks now handled via dedicated Feature 3)
+            // - Camera pose (3D starmap paused, not user-facing)
+            // - HUD hints (internal state, not actionable)
         };
 
         auto renderMiningTab = [&]() {
@@ -836,7 +1017,6 @@ void OverlayRenderer::renderImGui()
             if (!hasTelemetry)
             {
                 ImGui::Spacing();
-                ImGui::Separator();
                 ImGui::Text("Mining totals: 0.0 m3");
                 ImGui::Spacing();
                 ImGui::TextDisabled("Recent rate (m3/min)");
@@ -1223,11 +1403,13 @@ void OverlayRenderer::renderImGui()
                 {
                     ImGui::BeginDisabled();
                 }
+                ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 2.0f);  // Slightly rounded corners
                 ImGui::PushStyleColor(ImGuiCol_Button, kButtonBase);
                 ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kButtonHover);
                 ImGui::PushStyleColor(ImGuiCol_ButtonActive, kButtonActive);
                 const bool clicked = ImGui::Button(disableButton ? "Resetting..." : "Reset session");
                 ImGui::PopStyleColor(3);
+                ImGui::PopStyleVar();
                 if (disableButton)
                 {
                     ImGui::EndDisabled();
@@ -1286,7 +1468,6 @@ void OverlayRenderer::renderImGui()
             if (!hasTelemetry)
             {
                 ImGui::Spacing();
-                ImGui::Separator();
                 ImGui::Text("Combat totals: 0 dealt | 0 taken");
                 ImGui::Spacing();
                 ImGui::TextDisabled("Damage over time (2 min)");
@@ -1652,6 +1833,7 @@ void OverlayRenderer::renderImGui()
                 }
                 else
                 {
+                    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 2.0f);  // Slightly rounded corners
                     ImGui::PushStyleColor(ImGuiCol_Button, kButtonBase);
                     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kButtonHover);
                     ImGui::PushStyleColor(ImGuiCol_ButtonActive, kButtonActive);
@@ -1683,6 +1865,7 @@ void OverlayRenderer::renderImGui()
                     }
 
                     ImGui::PopStyleColor(3);
+                    ImGui::PopStyleVar();  // FrameRounding
 
                     if (!lastMessage.empty())
                     {
@@ -1700,11 +1883,198 @@ void OverlayRenderer::renderImGui()
             }
         };
 
+        auto renderPscanTab = [&]() {
+            const bool hasPscan = currentState_ && currentState_->pscan_data.has_value();
+            
+            // Muted orange theme colors
+            const ImVec4 orangeButton = ImVec4(0.85f, 0.45f, 0.20f, 1.0f);      // Muted orange
+            const ImVec4 orangeButtonHover = ImVec4(0.95f, 0.55f, 0.30f, 1.0f); // Brighter on hover
+            const ImVec4 orangeButtonActive = ImVec4(0.75f, 0.35f, 0.10f, 1.0f); // Darker when clicked
+            const ImVec4 orangeButtonDisabled = ImVec4(0.5f, 0.5f, 0.5f, 0.5f);  // Grayed out when disabled
+            const ImVec4 orangeBorder = ImVec4(0.85f, 0.45f, 0.20f, 0.6f);      // Table borders
+            const ImVec4 orangeHeader = ImVec4(0.85f, 0.45f, 0.20f, 0.3f);      // Table header background
+            const ImVec4 orangeRowHover = ImVec4(0.85f, 0.45f, 0.20f, 0.15f);   // Row hover
+            
+            // Check prerequisites for P-SCAN
+            const bool hasFollowMode = currentState_->follow_mode_enabled;
+            const bool isAuthenticated = currentState_->authenticated;
+            const bool canScan = hasFollowMode && isAuthenticated;
+            
+            // Show warnings if prerequisites not met
+            if (!hasFollowMode)
+            {
+                ImGui::Spacing();
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.96f, 0.62f, 0.04f, 1.0f)); // Warning yellow
+                ImGui::TextWrapped("Follow mode must be enabled in the web app.");
+                ImGui::PopStyleColor();
+                ImGui::Spacing();
+            }
+            
+            if (!isAuthenticated)
+            {
+                ImGui::Spacing();
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.96f, 0.62f, 0.04f, 1.0f)); // Warning yellow
+                ImGui::TextWrapped("Not authenticated. Connect your wallet in the web app to use P-SCAN.");
+                ImGui::PopStyleColor();
+                ImGui::Spacing();
+            }
+            
+            if (!hasPscan)
+            {
+                ImGui::Spacing();
+                if (canScan)
+                {
+                    ImGui::TextDisabled("No scan data available.");
+                    ImGui::Spacing();
+                    ImGui::TextWrapped("Deploy a portable refinery or printer, then click 'Scan Current System' to find nearby network nodes.");
+                }
+                else
+                {
+                    ImGui::TextDisabled("Prerequisites not met (see warnings above).");
+                }
+                ImGui::Spacing();
+                
+                // Styled orange button with rounded corners, auto-width
+                ImGui::PushStyleColor(ImGuiCol_Button, canScan ? orangeButton : orangeButtonDisabled);
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, canScan ? orangeButtonHover : orangeButtonDisabled);
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, canScan ? orangeButtonActive : orangeButtonDisabled);
+                ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 2.0f);
+                
+                // Auto-width button (0.0f width = auto-size to text)
+                ImGui::BeginDisabled(!canScan);
+                if (ImGui::Button("Scan Current System", ImVec2(0.0f, 0.0f)))
+                {
+                    // Emit event to trigger scan via helper → web app
+                    overlay::OverlayEvent event;
+                    event.type = overlay::OverlayEventType::PscanTriggerRequested;
+                    event.timestamp_ms = now_ms();
+                    event.payload = "{}"; // Empty payload for now
+                    
+                    if (eventWriter_.publish(event))
+                    {
+                        spdlog::info("P-SCAN trigger event published");
+                    }
+                    else
+                    {
+                        spdlog::warn("Failed to publish P-SCAN trigger event");
+                    }
+                }
+                ImGui::EndDisabled();
+                
+                ImGui::PopStyleVar();
+                ImGui::PopStyleColor(3);
+                
+                return;
+            }
+            
+            const overlay::PscanData& pscan = *currentState_->pscan_data;
+            
+            ImGui::Separator();
+            ImGui::Text("System: %s", pscan.system_name.c_str());
+            ImGui::SameLine();
+            ImGui::TextDisabled("(%d node%s found)", 
+                static_cast<int>(pscan.nodes.size()), 
+                pscan.nodes.size() != 1 ? "s" : "");
+            
+            ImGui::Spacing();
+            
+            // Styled orange button with rounded corners, auto-width
+            ImGui::PushStyleColor(ImGuiCol_Button, canScan ? orangeButton : orangeButtonDisabled);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, canScan ? orangeButtonHover : orangeButtonDisabled);
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, canScan ? orangeButtonActive : orangeButtonDisabled);
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 2.0f);
+            
+            ImGui::BeginDisabled(!canScan);
+            if (ImGui::Button("Scan Current System", ImVec2(0.0f, 0.0f)))
+            {
+                // Emit event to trigger scan via helper → web app
+                overlay::OverlayEvent event;
+                event.type = overlay::OverlayEventType::PscanTriggerRequested;
+                event.timestamp_ms = now_ms();
+                event.payload = "{}"; // Empty payload for now
+                
+                if (eventWriter_.publish(event))
+                {
+                    spdlog::info("P-SCAN trigger event published");
+                }
+                else
+                {
+                    spdlog::warn("Failed to publish P-SCAN trigger event");
+                }
+            }
+            ImGui::EndDisabled();
+            
+            ImGui::PopStyleVar();
+            ImGui::PopStyleColor(3);
+            
+            ImGui::Spacing();
+            
+            if (pscan.nodes.empty())
+            {
+                ImGui::TextDisabled("No network nodes found in this system.");
+                return;
+            }
+            
+            // Display results table with orange theme
+            ImGui::PushStyleColor(ImGuiCol_Border, orangeBorder);
+            ImGui::PushStyleColor(ImGuiCol_TableHeaderBg, orangeHeader);
+            ImGui::PushStyleColor(ImGuiCol_TableRowBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f)); // Transparent
+            ImGui::PushStyleColor(ImGuiCol_TableRowBgAlt, ImVec4(0.1f, 0.1f, 0.1f, 0.3f)); // Subtle alt row
+            
+            if (ImGui::BeginTable("PscanResults", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY))
+            {
+                ImGui::TableSetupColumn("Node", ImGuiTableColumnFlags_WidthStretch);
+                ImGui::TableSetupColumn("Owner", ImGuiTableColumnFlags_WidthStretch);
+                ImGui::TableSetupColumn("Distance", ImGuiTableColumnFlags_WidthFixed, 100.0f);
+                ImGui::TableHeadersRow();
+                
+                for (const auto& node : pscan.nodes)
+                {
+                    ImGui::TableNextRow();
+                    
+                    // Row hover effect
+                    if (ImGui::IsItemHovered())
+                    {
+                        ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, ImGui::GetColorU32(orangeRowHover));
+                    }
+                    
+                    ImGui::TableNextColumn();
+                    ImGui::TextUnformatted(node.name.c_str());
+                    
+                    ImGui::TableNextColumn();
+                    ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "%s", node.owner_name.c_str());
+                    
+                    ImGui::TableNextColumn();
+                    // Convert distance from meters to km, then to light seconds
+                    const double distKm = node.distance_m / 1000.0;
+                    constexpr double LIGHT_SPEED_KM_PER_SEC = 299792.458;
+                    const double distLightSec = distKm / LIGHT_SPEED_KM_PER_SEC;
+                    
+                    // Display in light seconds if >= 0.01 ls (~2998 km), otherwise km
+                    char distBuf[64];
+                    if (distLightSec >= 0.01)
+                    {
+                        snprintf(distBuf, sizeof(distBuf), "%.2f ls", distLightSec);
+                    }
+                    else
+                    {
+                        snprintf(distBuf, sizeof(distBuf), "%.2f km", distKm);
+                    }
+                    ImGui::TextUnformatted(distBuf);
+                }
+                
+                ImGui::EndTable();
+            }
+            
+            ImGui::PopStyleColor(4); // Pop all 4 style colors
+        };
+
         constexpr int kTabOverview = 0;
         constexpr int kTabMining = 1;
         constexpr int kTabCombat = 2;
+        constexpr int kTabPscan = 3;
 
-        if (currentTabIndex_ < kTabOverview || currentTabIndex_ > kTabCombat)
+        if (currentTabIndex_ < kTabOverview || currentTabIndex_ > kTabPscan)
         {
             currentTabIndex_ = kTabOverview;
         }
@@ -1736,6 +2106,7 @@ void OverlayRenderer::renderImGui()
             beginTab("Overview", kTabOverview, renderOverviewTab);
             beginTab("Mining", kTabMining, renderMiningTab);
             beginTab("Combat", kTabCombat, renderCombatTab);
+            beginTab("P-SCAN", kTabPscan, renderPscanTab);
 
             ImGui::EndTabBar();
         }

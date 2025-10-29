@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <tlhelp32.h>
 #include <shlobj.h>
+#include <shellapi.h>
 
 #include <cwctype>
 
@@ -163,7 +164,19 @@ namespace
                 {"recent_damage_dealt", combat.recentDamageDealt},
                 {"recent_damage_taken", combat.recentDamageTaken},
                 {"recent_window_seconds", combat.recentWindowSeconds},
-                {"last_event_ms", combat.lastEventMs}
+                {"last_event_ms", combat.lastEventMs},
+                {"session_start_ms", combat.sessionStartMs},
+                {"session_duration_seconds", combat.sessionDurationSeconds},
+                {"miss_dealt", combat.missDealt},
+                {"glancing_dealt", combat.glancingDealt},
+                {"standard_dealt", combat.standardDealt},
+                {"penetrating_dealt", combat.penetratingDealt},
+                {"smashing_dealt", combat.smashingDealt},
+                {"miss_taken", combat.missTaken},
+                {"glancing_taken", combat.glancingTaken},
+                {"standard_taken", combat.standardTaken},
+                {"penetrating_taken", combat.penetratingTaken},
+                {"smashing_taken", combat.smashingTaken}
             };
             metrics["combat"] = std::move(combatJson);
         }
@@ -232,6 +245,36 @@ namespace
 
             metrics["history"] = std::move(historyJson);
         }
+        
+        // Serialize high-granularity sparkline buffers (always include, even if empty)
+        nlohmann::json combatSamples = nlohmann::json::array();
+        if (!summary.combatSparkline.empty())
+        {
+            combatSamples.get_ref<nlohmann::json::array_t&>().reserve(summary.combatSparkline.size());
+            for (const auto& sample : summary.combatSparkline)
+            {
+                combatSamples.push_back({
+                    {"t", sample.timestampMs},
+                    {"dd", sample.damageDealt},
+                    {"dt", sample.damageTaken}
+                });
+            }
+        }
+        metrics["combat_sparkline"] = std::move(combatSamples);
+        
+        nlohmann::json miningSamples = nlohmann::json::array();
+        if (!summary.miningSparkline.empty())
+        {
+            miningSamples.get_ref<nlohmann::json::array_t&>().reserve(summary.miningSparkline.size());
+            for (const auto& sample : summary.miningSparkline)
+            {
+                miningSamples.push_back({
+                    {"t", sample.timestampMs},
+                    {"v", sample.volumeM3}
+                });
+            }
+        }
+        metrics["mining_sparkline"] = std::move(miningSamples);
 
         return metrics;
     }
@@ -375,6 +418,23 @@ HelperRuntime::HelperRuntime(Config config)
     }
 
     config_ = std::move(config);
+
+    // Initialize SessionTracker with data directory
+    PWSTR rawPath = nullptr;
+    std::filesystem::path dataDir;
+    if (SUCCEEDED(::SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_CREATE, nullptr, &rawPath)))
+    {
+        dataDir = std::filesystem::path(rawPath) / L"EFOverlay" / L"data";
+        ::CoTaskMemFree(rawPath);
+    }
+    else
+    {
+        dataDir = std::filesystem::temp_directory_path() / L"EFOverlay" / L"data";
+    }
+
+    std::error_code ec;
+    std::filesystem::create_directories(dataDir, ec);
+    sessionTracker_ = std::make_unique<helper::SessionTracker>(dataDir);
 }
 
 HelperRuntime::~HelperRuntime()
@@ -409,6 +469,19 @@ bool HelperRuntime::start()
             std::move(watcherConfig),
             systemResolver_,
             [this](const overlay::OverlayState& state, std::size_t payloadBytes) {
+                // Record system visit if we have location data
+                if (state.player_marker.has_value() && !state.player_marker->system_id.empty())
+                {
+                    const auto& systemId = state.player_marker->system_id;
+                    const auto& systemName = state.player_marker->display_name;
+                    
+                    if (sessionTracker_)
+                    {
+                        sessionTracker_->recordSystemVisitAllTime(systemId, systemName);
+                        sessionTracker_->recordSystemVisitSession(systemId, systemName);
+                    }
+                }
+
                 if (!server_.ingestOverlayState(state, payloadBytes, "log-watcher"))
                 {
                     setError("Failed to publish overlay state from log watcher");
@@ -469,12 +542,28 @@ bool HelperRuntime::start()
         return response;
     });
 
+    server_.setInjectOverlayHandler([this]() -> bool {
+        return injectOverlay();
+    });
+
     server_.setFollowModeProvider([this]() {
         return followModeEnabled_.load();
     });
 
     server_.setFollowModeUpdateHandler([this](bool enabled) {
         return applyFollowModeSetting(enabled, "http");
+    });
+
+    server_.setSessionTrackerProvider([this]() -> helper::SessionTracker* {
+        return sessionTracker_.get();
+    });
+
+    // Log path reload handler
+    server_.setLogPathReloadHandler([this]() {
+        if (logWatcher_)
+        {
+            logWatcher_->reloadLogPaths();
+        }
     });
 
     // Restore persisted mining session BEFORE starting log processing
@@ -634,8 +723,23 @@ bool HelperRuntime::postSampleOverlayState()
 
 bool HelperRuntime::injectOverlay(const std::wstring& processName)
 {
-    const auto injectorPath = resolveArtifact(std::filesystem::path(L"injector/Release/ef-overlay-injector.exe"));
-    const auto dllPath = resolveArtifact(std::filesystem::path(L"overlay/Release/ef-overlay.dll"));
+    // Try MSIX/installed layout first (files in same directory as exe)
+    auto injectorPath = executableDirectory_ / L"ef-overlay-injector.exe";
+    auto dllPath = executableDirectory_ / L"ef-overlay.dll";
+    
+    // Fallback to development build layout if MSIX layout doesn't exist
+    if (!std::filesystem::exists(injectorPath))
+    {
+        injectorPath = resolveArtifact(std::filesystem::path(L"injector/Release/ef-overlay-injector.exe"));
+        dllPath = resolveArtifact(std::filesystem::path(L"overlay/Release/ef-overlay.dll"));
+        
+        // Also try Debug build
+        if (!std::filesystem::exists(injectorPath))
+        {
+            injectorPath = resolveArtifact(std::filesystem::path(L"injector/Debug/ef-overlay-injector.exe"));
+            dllPath = resolveArtifact(std::filesystem::path(L"overlay/Debug/ef-overlay.dll"));
+        }
+    }
 
     if (injectorPath.empty() || dllPath.empty())
     {
@@ -649,6 +753,44 @@ bool HelperRuntime::injectOverlay(const std::wstring& processName)
         oss << "Injector or overlay DLL missing (" << injectorPath.string() << ", " << dllPath.string() << ")";
         setInjectionMessage(oss.str(), false);
         return false;
+    }
+
+    // MSIX apps install to WindowsApps folder which has ACL restrictions preventing
+    // ShellExecuteEx with runas from working. Copy to temp directory as workaround.
+    std::filesystem::path actualInjectorPath = injectorPath;
+    std::filesystem::path actualDllPath = dllPath;
+    
+    bool needsTempCopy = injectorPath.wstring().find(L"WindowsApps") != std::wstring::npos;
+    std::filesystem::path tempDir;
+    
+    if (needsTempCopy)
+    {
+        wchar_t tempPathBuf[MAX_PATH];
+        if (GetTempPathW(MAX_PATH, tempPathBuf) == 0)
+        {
+            setInjectionMessage("Failed to get temp directory path", false);
+            return false;
+        }
+        
+        tempDir = std::filesystem::path(tempPathBuf) / L"ef-overlay-inject";
+        
+        try
+        {
+            std::filesystem::create_directories(tempDir);
+            
+            actualInjectorPath = tempDir / L"ef-overlay-injector.exe";
+            actualDllPath = tempDir / L"ef-overlay.dll";
+            
+            std::filesystem::copy_file(injectorPath, actualInjectorPath, std::filesystem::copy_options::overwrite_existing);
+            std::filesystem::copy_file(dllPath, actualDllPath, std::filesystem::copy_options::overwrite_existing);
+        }
+        catch (const std::exception& e)
+        {
+            std::ostringstream oss;
+            oss << "Failed to copy injection files to temp: " << e.what();
+            setInjectionMessage(oss.str(), false);
+            return false;
+        }
     }
 
     ProcessLookup lookup = find_process_by_name(processName);
@@ -677,45 +819,71 @@ bool HelperRuntime::injectOverlay(const std::wstring& processName)
     }
 
     const std::wstring pidArgument = std::to_wstring(*lookup.pid);
+    
+    // Build parameters string: "<pid> <dll-path>" using actualDllPath (possibly temp copy)
+    std::wstring parameters = pidArgument + L" \"" + actualDllPath.wstring() + L"\"";
+    
+    // Store paths as wstrings (not temporaries) so c_str() pointers remain valid
+    std::wstring injectorPathStr = actualInjectorPath.wstring();
+    std::wstring dllPathStr = actualDllPath.wstring();
 
-    std::wstring commandLine = L"\"" + injectorPath.wstring() + L"\" " + pidArgument + L" \"" + dllPath.wstring() + L"\"";
+    // Use ShellExecuteEx with "runas" verb to elevate injector (triggers UAC prompt)
+    SHELLEXECUTEINFOW sei{};
+    sei.cbSize = sizeof(SHELLEXECUTEINFOW);
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
+    sei.hwnd = nullptr;
+    sei.lpVerb = L"runas";  // Request elevation
+    sei.lpFile = injectorPathStr.c_str();
+    sei.lpParameters = parameters.c_str();
+    sei.lpDirectory = nullptr;
+    sei.nShow = SW_HIDE;
 
-    STARTUPINFOW si{};
-    si.cb = sizeof(si);
-    PROCESS_INFORMATION pi{};
-
-    std::wstring commandMutable = commandLine;
-    if (!CreateProcessW(nullptr, commandMutable.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
+    if (!ShellExecuteExW(&sei))
     {
         const auto errorCode = GetLastError();
         std::ostringstream oss;
-        oss << "CreateProcessW failed with error " << errorCode;
+        
+        if (errorCode == ERROR_CANCELLED)
+        {
+            oss << "User cancelled UAC elevation prompt";
+        }
+        else
+        {
+            oss << "Failed to launch injector with elevation (error " << errorCode << ")";
+        }
+        
         setInjectionMessage(oss.str(), false);
         return false;
     }
 
-    WaitForSingleObject(pi.hProcess, INFINITE);
+    if (!sei.hProcess)
+    {
+        setInjectionMessage("Injector elevation failed (no process handle)", false);
+        return false;
+    }
+
+    // Wait for injector to complete
+    WaitForSingleObject(sei.hProcess, INFINITE);
 
     DWORD exitCode = 1;
-    if (!GetExitCodeProcess(pi.hProcess, &exitCode))
+    if (!GetExitCodeProcess(sei.hProcess, &exitCode))
     {
         exitCode = 1;
     }
 
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
+    CloseHandle(sei.hProcess);
 
     if (exitCode != 0)
     {
         std::ostringstream oss;
-        oss << "Injector exited with code " << exitCode;
+        oss << "Injector exited with code " << exitCode << " - check if game is running";
         setInjectionMessage(oss.str(), false);
         return false;
     }
 
     {
         std::ostringstream oss;
-        oss << "Overlay injector completed successfully (PID=" << *lookup.pid << ")";
+        oss << "Overlay injected successfully into " << narrow_utf8(processName) << " (PID=" << *lookup.pid << ")";
         setInjectionMessage(oss.str(), true);
     }
     return true;
@@ -760,6 +928,159 @@ void HelperRuntime::eventPump()
                     }
 
                     applyFollowModeSetting(desired, "event");
+                }
+                else if (event.type == overlay::OverlayEventType::VisitedSystemsTrackingToggled)
+                {
+                    spdlog::info("Received VisitedSystemsTrackingToggled event from overlay");
+                    if (sessionTracker_)
+                    {
+                        const bool currentState = sessionTracker_->isAllTimeTrackingEnabled();
+                        sessionTracker_->setAllTimeTrackingEnabled(!currentState);
+                        spdlog::info("Toggled visited systems tracking: {} -> {}", currentState, !currentState);
+                        
+                        // Direct state update like follow mode (instant WebSocket + shared memory broadcast)
+                        if (!server_.updateTrackingFlag(!currentState))
+                        {
+                            spdlog::debug("Tracking flag update deferred; overlay state not yet available");
+                        }
+                    }
+                    else
+                    {
+                        spdlog::warn("Cannot toggle tracking: sessionTracker not initialized");
+                    }
+                }
+                else if (event.type == overlay::OverlayEventType::SessionStartRequested)
+                {
+                    spdlog::info("Received SessionStartRequested event from overlay");
+                    if (sessionTracker_)
+                    {
+                        const std::string sessionId = sessionTracker_->startSession();
+                        spdlog::info("Started new session: {}", sessionId);
+                        
+                        // Direct state update like follow mode (instant WebSocket + shared memory broadcast)
+                        if (!server_.updateSessionState(true, sessionId))
+                        {
+                            spdlog::debug("Session state update deferred; overlay state not yet available");
+                        }
+                    }
+                    else
+                    {
+                        spdlog::warn("Cannot start session: sessionTracker not initialized");
+                    }
+                }
+                else if (event.type == overlay::OverlayEventType::SessionStopRequested)
+                {
+                    spdlog::info("Received SessionStopRequested event from overlay");
+                    if (sessionTracker_)
+                    {
+                        if (sessionTracker_->hasActiveSession())
+                        {
+                            sessionTracker_->stopSession();
+                            spdlog::info("Stopped active session");
+                            
+                            // Direct state update like follow mode (instant WebSocket + shared memory broadcast)
+                            if (!server_.updateSessionState(false, std::nullopt))
+                            {
+                                spdlog::debug("Session state update deferred; overlay state not yet available");
+                            }
+                        }
+                        else
+                        {
+                            spdlog::warn("Cannot stop session: no active session");
+                        }
+                    }
+                    else
+                    {
+                        spdlog::warn("Cannot stop session: sessionTracker not initialized");
+                    }
+                }
+                else if (event.type == overlay::OverlayEventType::BookmarkCreateRequested)
+                {
+                    if (!event.payload.empty())
+                    {
+                        try
+                        {
+                            const auto json = nlohmann::json::parse(event.payload);
+                            const std::string systemId = json.at("system_id").get<std::string>();
+                            const std::string notes = json.value("notes", "");
+                            const bool forTribe = json.value("for_tribe", false);
+                            
+                            // Extract system name from current overlay state (player marker)
+                            std::string systemName;
+                            if (auto stateOpt = server_.getLatestOverlayStateJson(); stateOpt.has_value())
+                            {
+                                const auto& stateJson = *stateOpt;
+                                if (stateJson.contains("player_marker") && stateJson["player_marker"].is_object())
+                                {
+                                    const auto& marker = stateJson["player_marker"];
+                                    systemName = marker.value("display_name", "");
+                                }
+                            }
+                            
+                            spdlog::info("Processing bookmark request: system={} ({}), notes={}, for_tribe={}", 
+                                         systemId, systemName, notes, forTribe);
+                            
+                            // POST to helper HTTP endpoint which will relay to EF Map
+                            // Use local HTTP client to post to our own /bookmarks/create endpoint
+                            // which then forwards to the EF Map worker
+                            
+                            // Build HTTP request body
+                            nlohmann::json requestBody;
+                            requestBody["system_id"] = systemId;
+                            requestBody["system_name"] = systemName;
+                            requestBody["notes"] = notes;
+                            requestBody["for_tribe"] = forTribe;
+                            
+                            // Post to local helper endpoint (async fire-and-forget for now)
+                            // The endpoint will handle forwarding to EF Map
+                            std::thread([requestBody]() {
+                                try
+                                {
+                                    httplib::Client cli("127.0.0.1", 38765);
+                                    cli.set_connection_timeout(2, 0);
+                                    cli.set_read_timeout(5, 0);
+                                    
+                                    httplib::Headers headers = {
+                                        {"Content-Type", "application/json"},
+                                        {"X-EF-Helper-Auth", "ef-overlay-dev-token-2025"}
+                                    };
+                                    
+                                    const auto res = cli.Post("/bookmarks/create", headers, 
+                                                              requestBody.dump(), "application/json");
+                                    
+                                    if (res && res->status == 200)
+                                    {
+                                        spdlog::info("Bookmark creation succeeded");
+                                    }
+                                    else
+                                    {
+                                        spdlog::warn("Bookmark creation failed: HTTP {}", 
+                                                     res ? res->status : 0);
+                                    }
+                                }
+                                catch (const std::exception& ex)
+                                {
+                                    spdlog::error("Bookmark creation HTTP request failed: {}", ex.what());
+                                }
+                            }).detach();
+                        }
+                        catch (const std::exception& ex)
+                        {
+                            spdlog::error("Failed to parse BookmarkCreateRequested payload: {}", ex.what());
+                        }
+                    }
+                }
+                else if (event.type == overlay::OverlayEventType::PscanTriggerRequested)
+                {
+                    spdlog::info("Received PscanTriggerRequested event from overlay");
+                    
+                    // Broadcast to web app via WebSocket to trigger scan
+                    nlohmann::json wsMessage;
+                    wsMessage["type"] = "pscan_trigger_request";
+                    wsMessage["timestamp_ms"] = event.timestamp_ms;
+                    
+                    server_.broadcastWebSocketMessage(wsMessage);
+                    spdlog::info("Broadcasted pscan_trigger_request to web app via WebSocket");
                 }
                 else if (event.type == overlay::OverlayEventType::CustomJson)
                 {

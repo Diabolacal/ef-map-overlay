@@ -18,6 +18,7 @@
 #include "system_resolver.hpp"
 #include "overlay_schema.hpp"
 #include "star_catalog.hpp"
+#include "session_tracker.hpp"
 
 class HelperRuntime
 {
@@ -85,6 +86,9 @@ public:
     HelperServer& server() noexcept { return server_; }
     const HelperServer& server() const noexcept { return server_; }
 
+    helper::SessionTracker* sessionTracker() noexcept { return sessionTracker_.get(); }
+    const helper::SessionTracker* sessionTracker() const noexcept { return sessionTracker_.get(); }
+
 private:
     void eventPump();
     overlay::OverlayState buildSampleOverlayState() const;
@@ -123,4 +127,5 @@ private:
 
     helper::logs::SystemResolver systemResolver_;
     std::atomic_bool followModeEnabled_{true};
+    std::unique_ptr<helper::SessionTracker> sessionTracker_;
 };

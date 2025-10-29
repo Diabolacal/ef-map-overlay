@@ -19,6 +19,9 @@
 #include "event_channel.hpp"
 #include "helper_websocket.hpp"
 
+// Forward declaration
+namespace helper { class SessionTracker; }
+
 class HelperServer {
 public:
     HelperServer(std::string host, int port, std::string authToken);
@@ -77,14 +80,33 @@ public:
 
     using TelemetrySummaryHandler = std::function<std::optional<nlohmann::json>()>;
     using TelemetryResetHandler = std::function<std::optional<nlohmann::json>()>;
+    using InjectOverlayHandler = std::function<bool()>;
 
     void setTelemetrySummaryHandler(TelemetrySummaryHandler handler);
     void setTelemetryResetHandler(TelemetryResetHandler handler);
+    void setInjectOverlayHandler(InjectOverlayHandler handler);
     using FollowModeProvider = std::function<bool()>;
     using FollowModeUpdateHandler = std::function<bool(bool)>;
     void setFollowModeProvider(FollowModeProvider provider);
     void setFollowModeUpdateHandler(FollowModeUpdateHandler handler);
     bool updateFollowModeFlag(bool enabled);
+
+    // Log path configuration
+    using LogPathReloadHandler = std::function<void()>;
+    void setLogPathReloadHandler(LogPathReloadHandler handler);
+
+    // Direct update methods for instant state sync (similar to follow mode)
+    bool updateTrackingFlag(bool enabled);
+    bool updateSessionState(bool hasActiveSession, std::optional<std::string> sessionId);
+
+    using SessionTrackerProvider = std::function<helper::SessionTracker*()>;
+    void setSessionTrackerProvider(SessionTrackerProvider provider);
+    
+    // Public accessor for latest overlay state JSON (used by bookmark creation)
+    std::optional<nlohmann::json> getLatestOverlayStateJson() const { return latestOverlayStateJson(); }
+    
+    // Broadcast JSON message to all connected WebSocket clients
+    void broadcastWebSocketMessage(const nlohmann::json& message);
 
 private:
     void configureRoutes();
@@ -134,6 +156,12 @@ private:
 
     TelemetrySummaryHandler telemetrySummaryHandler_{};
     TelemetryResetHandler telemetryResetHandler_{};
+    InjectOverlayHandler injectOverlayHandler_{};
     FollowModeProvider followModeProvider_{};
     FollowModeUpdateHandler followModeUpdateHandler_{};
+    SessionTrackerProvider sessionTrackerProvider_{};
+    LogPathReloadHandler logPathReloadHandler_{};
+
+    mutable std::mutex pscanMutex_;
+    std::optional<overlay::PscanData> latestPscanData_{};
 };

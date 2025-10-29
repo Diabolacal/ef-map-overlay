@@ -109,11 +109,27 @@ namespace helper::logs
         }
     };
 
+    // High-granularity sparkline samples (~1s resolution, 120s retention)
+    struct CombatDamageSample
+    {
+        std::uint64_t timestampMs{0};
+        double damageDealt{0.0};
+        double damageTaken{0.0};
+    };
+
+    struct MiningRateSample
+    {
+        std::uint64_t timestampMs{0};
+        double volumeM3{0.0};
+    };
+
     struct TelemetrySummary
     {
         std::optional<CombatTelemetrySnapshot> combat;
         std::optional<MiningTelemetrySnapshot> mining;
         std::optional<TelemetryHistorySnapshot> history;
+        std::vector<CombatDamageSample> combatSparkline;
+        std::vector<MiningRateSample> miningSparkline;
     };
 
     struct LogWatcherStatus
@@ -160,6 +176,9 @@ namespace helper::logs
     void forcePublish();
 
         void setFollowModeSupplier(FollowModeSupplier supplier);
+        
+        // Reload log directories from registry (for custom path changes)
+        void reloadLogPaths();
 
     private:
         enum class TextEncoding

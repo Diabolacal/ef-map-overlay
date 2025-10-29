@@ -2,6 +2,8 @@
 
 Purpose: This repository hosts the native helper application, DirectX 12 overlay components, and related tooling that integrate EF-Map data directly into the EVE Frontier client. The EF-Map web application and data pipelines remain in the sibling repository `EF-Map-main`. Keep both repos aligned by mirroring relevant guardrails and documenting cross-repo dependencies.
 
+**CRITICAL Smoke Testing Rule:** The helper (`ef-overlay-helper.exe`) MUST be launched from an **external PowerShell window** (outside VS Code) for all testing. VS Code integrated terminals fail to bind the helper correctly during injection, causing "waiting on overlay state" errors. Always use process name `exefile.exe` (not PID) for injection. This is documented in AGENTS.md, LLM_TROUBLESHOOTING_GUIDE.md, and enforced across all overlay workflows.
+
 ## Operator Quick Start (Non-coder)
 1. Describe the desired overlay/helper change in plain language (feature, bug, or doc tweak).
 2. Assistant replies with: checklist, assumptions (≤2), risk class, plan.
@@ -48,6 +50,13 @@ For the combined guardrails that apply to both repos, cross-reference `EF-Map-ma
 - Prefer modular architecture (helper service, overlay renderer, shared IPC library) to keep testing manageable.
 - Provide dry-run modes for any script that touches user systems (registry edits, installer generation, etc.).
 
+### Chrome DevTools MCP for Web App Integration Testing
+- **Available:** Chrome DevTools MCP server (`chrome-devtools`) - registered for VS Code Copilot (lives in EF-Map-main workspace but accessible when testing helper ↔ web app communication).
+- **Usage:** When debugging helper endpoints (visited systems, sessions, follow mode) or protocol handshakes, use Chrome DevTools MCP to directly navigate to preview URLs, click buttons, inspect Console/Network tabs without user intermediary.
+- **Workflow:** See `EF-Map-main/docs/LLM_TROUBLESHOOTING_GUIDE.md` → "Chrome DevTools MCP" for detailed examples.
+- **Impact:** Dramatically accelerates web app integration debugging (2025-10-27: discovered malformed URLs + duplicate CORS headers in < 10 minutes).
+- **Proactive:** Default to MCP for any browser-side testing instead of asking user to manually check DevTools.
+
 ### Security & Signing
 - Never commit private keys or certificates. Reference secure storage paths and document usage procedures.
 - When documenting signing or installer steps, include placeholders (e.g., `<CERT_THUMBPRINT>`) rather than actual values.
@@ -68,7 +77,25 @@ For the combined guardrails that apply to both repos, cross-reference `EF-Map-ma
 - Run unit/integration tests when implemented (document coverage expectations in this file once available).
 - Manual smoke: verify overlay attach/detach, latency, and no crash in both windowed and fullscreen modes.
 - Security: confirm protocol handlers require trusted origins / session tokens before enabling.
-- Operational note: Start the helper from an external PowerShell window (outside VS Code) and inject using the stable process name `exefile.exe` so smoke runs don’t break on PID changes.
+
+### Automated Smoke Testing Protocol (MANDATORY)
+**The assistant performs ALL automated steps.** User only launches helper externally and provides visual confirmation.
+
+**User's sole manual steps:**
+1. Open external PowerShell window (Windows Start menu, NOT VS Code)
+2. Navigate to `C:\ef-map-overlay\build\src\helper\Debug`
+3. Run `.\ef-overlay-helper.exe`
+4. Observe in-game overlay behavior and report results
+
+**Assistant MUST execute (never ask user):**
+1. **Helper launch:** `Start-Process -FilePath <helper-exe> -WorkingDirectory (Split-Path <helper-exe>) -PassThru` → launches helper in **external PowerShell window** (separate from VS Code)
+2. **Injection:** `run_in_terminal` with `ef-overlay-injector.exe exefile.exe <dll-path>` → verify `[info] Injection completed (PID=XXXXX)`
+3. **Route calculation:** Chrome DevTools MCP → navigate to preview URL → **click Calculate Route button** (pre-calculated routes don't auto-send) → verify POST to helper succeeded
+4. **Status verification:** `Invoke-WebRequest http://127.0.0.1:38765/api/status` to confirm helper state, overlay connection, route data received
+
+**Rationale:** LLM executes these steps 10-100x faster than manual user actions. User provides strategic direction and visual confirmation; assistant handles all scriptable operations. This is the fundamental workflow optimization that makes overlay development efficient.
+
+**Critical external PowerShell rule:** Helper MUST run in external PowerShell window via `Start-Process -PassThru` - VS Code integrated terminals break helper ↔ overlay binding. Pattern found in `tools/overlay_smoke.ps1` line 62. Always use process name `exefile.exe` (not PID) for injection.
 
 ### Decision Log Template (reuse)
 `## YYYY-MM-DD – <Title>`
