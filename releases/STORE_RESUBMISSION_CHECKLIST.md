@@ -1,7 +1,22 @@
-# Microsoft Store Resubmission Checklist
+# Microsoft Store Resubmission Checklist - v1.0.1 EMERGENCY FIX
 **Date**: October 30, 2025  
-**Package**: EFMapHelper-v1.0.0.msix  
-**Location**: `C:\ef-map-overlay\releases\EFMapHelper-v1.0.0.msix`
+**Package**: EFMapHelper-v1.0.1.msix  
+**Location**: `C:\ef-map-overlay\releases\EFMapHelper-v1.0.1.msix`
+
+---
+
+## 🚨 EMERGENCY UPDATE - v1.0.1
+
+**Why this update?**  
+v1.0.0 was published on October 30, 2025 but contains a **critical packaging bug**:
+- **Bug:** Launches console window (PowerShell) instead of system tray GUI
+- **Cause:** Packaged `ef-overlay-helper.exe` (console app) instead of `ef-overlay-tray.exe` (GUI app)
+- **Fix:** v1.0.1 packages the correct GUI executable
+
+**User Impact:**  
+Existing v1.0.0 users will auto-update to v1.0.1 within 24 hours of approval.
+
+---
 
 ## ✅ Issues Fixed
 
