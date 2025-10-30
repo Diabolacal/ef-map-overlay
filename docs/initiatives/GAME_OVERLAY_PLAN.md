@@ -469,7 +469,7 @@ After 3+ hours of failed attempts (immediate log parsing, WebSocket GET on conne
 - Tribe bookmark: Authenticate + join tribe → tick tribe checkbox → add bookmark → verify appears ONLY in tribe folder (not personal).
 - No auth bookmark: Log out → verify tribe checkbox hidden → add bookmark → verify goes to personal folder.
 
-### Phase 6 – Packaging & pre-release readiness ✅ **IN CERTIFICATION** *(2025-10-30)*
+### Phase 6 – Packaging & distribution ✅ **COMPLETE** *(2025-10-30)*
 
 #### Overview
 Deliver a signed, installable helper package with frictionless first-run experience and automatic updates via **dual distribution**: immediate GitHub Releases (ZIP) + Microsoft Store (MSIX with automatic signing).
@@ -480,19 +480,19 @@ Deliver a signed, installable helper package with frictionless first-run experie
 | Channel | Format | Signing | Target Audience | Status |
 |---------|--------|---------|----------------|---------|
 | **GitHub Releases** | ZIP (manual install) | Self-signed test cert | Power users, immediate availability | ✅ **LIVE** (v1.0.0) |
-| **Microsoft Store** | MSIX | Microsoft signs during certification | General users, auto-updates | ⏳ **SUBMITTED** (2025-10-30) |
+| **Microsoft Store** | MSIX | Microsoft signs during certification | General users, auto-updates | ✅ **LIVE** (2025-10-30) |
 
 **GitHub Release v1.0.0**: Published at https://github.com/Diabolacal/ef-map-overlay/releases/tag/v1.0.0
 - Contains: ZIP with helper.exe, overlay.dll, injector.exe, PowerShell installation script
 - Installation: Extract → run `install.ps1` (creates shortcuts, registers protocol handler)
 - Users: Available immediately for players who want overlay features now
 
-**Microsoft Store Submission**: Submitted 2025-10-30, **RESUBMITTED 2025-10-30**
-- Package: `EFMapHelper-v1.0.0.msix` (1.26 MB, Release build, unsigned)
+**Microsoft Store**: ✅ **PUBLISHED** (2025-10-30)
+- Package: `EFMapHelper-v1.0.0.msix` (1.26 MB, signed by Microsoft)
 - Publisher: Ef-Map (Individual account, ID: `CN=9523ACA0-C1D5-4790-88D6-D95FA23F0EF9`)
 - App Name: "EF-Map Overlay Helper"
-- Certification: Microsoft will sign during review process (1-3 business days expected)
-- Benefits: Automatic updates, trusted certificate, discoverable in Store search
+- Status: Live in Microsoft Store with automatic updates
+- Benefits: Trusted Microsoft certificate, discoverable in Store search, zero-friction installation
 
 **Initial Certification Issues (2025-10-30):**
 

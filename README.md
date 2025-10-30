@@ -15,9 +15,13 @@
 ## 🚀 Installation
 
 ### Option 1: Microsoft Store *(Recommended - auto-updates)*
-**Status**: Submitted for certification (2025-10-30), awaiting 1-3 day review
+**Status**: ✅ **LIVE** (Published 2025-10-30)
 
-Search "EF-Map Overlay Helper" in Microsoft Store or visit the app page once approved. One-click install with automatic updates.
+**[Install from Microsoft Store](ms-windows-store://pdp/?productid=9NP71MBTF6GF)** or search "EF-Map Overlay Helper"
+
+- Store ID: `9NP71MBTF6GF`
+- Web link: https://apps.microsoft.com/detail/9NP71MBTF6GF
+- One-click install with automatic updates and trusted Microsoft certificate
 
 ### Option 2: GitHub Releases *(Available now)*
 **Download**: [v1.0.0 ZIP](https://github.com/Diabolacal/ef-map-overlay/releases/tag/v1.0.0)
