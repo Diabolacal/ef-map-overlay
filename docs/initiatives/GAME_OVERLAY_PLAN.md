@@ -487,12 +487,37 @@ Deliver a signed, installable helper package with frictionless first-run experie
 - Installation: Extract → run `install.ps1` (creates shortcuts, registers protocol handler)
 - Users: Available immediately for players who want overlay features now
 
-**Microsoft Store Submission**: Submitted 2025-10-30
-- Package: `EFMapHelper-v1.0.0.msix` (1.3 MB, Release build, unsigned)
-- Publisher: Ef-Map (Individual account, ID: 9523ACA0-C1D5-4790-88D6-D95FA23F0EF9)
+**Microsoft Store Submission**: Submitted 2025-10-30, **RESUBMITTED 2025-10-30**
+- Package: `EFMapHelper-v1.0.0.msix` (1.26 MB, Release build, unsigned)
+- Publisher: Ef-Map (Individual account, ID: `CN=9523ACA0-C1D5-4790-88D6-D95FA23F0EF9`)
 - App Name: "EF-Map Overlay Helper"
 - Certification: Microsoft will sign during review process (1-3 business days expected)
 - Benefits: Automatic updates, trusted certificate, discoverable in Store search
+
+**Initial Certification Issues (2025-10-30):**
+
+*Issue 1: Default/Placeholder Images*
+- **Problem**: Manifest referenced branded assets in `src/helper/Assets/` but build packaged 188-627 byte placeholder PNGs from repository root
+- **Impact**: Microsoft flagged "default image" in tile icons (generic blue square)
+- **Root cause**: Duplicate placeholder files at repo root were picked up by packager instead of real branded assets
+- **Fix**: Deleted all placeholder PNGs from repository root; MSIX build script now uses only `src/helper/Assets/` (1.4-43 KB branded logo files)
+- **Verification**: Extracted MSIX package confirmed correct asset sizes and EF-Map logo branding
+
+*Issue 2: Undisclosed Dependencies*
+- **Problem**: Microsoft policy 10.2.4.1 requires dependency disclosure within first two lines of Store description
+- **Dependency**: Microsoft Visual C++ Redistributable (auto-installed if missing)
+- **Fix**: Added 2-line disclosure to Store listing:
+  ```
+  **Requires:** Microsoft Visual C++ Redistributable (automatically installed if missing) and DirectX 12 (Windows 10 version 2004+).
+  **Bring real-time EF-Map data directly into EVE Frontier.** Windows native application that renders live route guidance, mining/combat telemetry, and session tracking as an in-game overlay—no alt-tabbing required.
+  ```
+- **Rationale**: Satisfies policy requirement while maintaining product pitch in second line
+
+**Corrected Package (2025-10-30):**
+- Fixed manifest with correct Partner Center identity values (`Ef-Map.EF-MapOverlayHelper`, version 1.0.0.0)
+- Branded assets verified via package extraction (no placeholders)
+- Store listing updated with dependency disclosure
+- Ready for resubmission with expected 1-3 day turnaround
 
 #### Signing Infrastructure
 **GitHub Releases**: Self-signed test certificate (`CN=EF Map Project Test Certificate`)

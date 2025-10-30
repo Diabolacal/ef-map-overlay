@@ -1,4 +1,10 @@
-<?xml version="1.0" encoding="utf-8"?>
+<!--
+EF-Map Overlay Helper requires runFullTrust for in-game overlay functionality, identical to Discord, OBS Studio, and NVIDIA overlays. 
+Uses DirectX 12 hooking to render navigation overlays in EVE Frontier via DLL injection for real-time route display and telemetry widgets. 
+NO data collection, all processing is local. Open source: github.com/Diabolacal/ef-map-overlay. 
+Featured on CCP Games' official EVE Frontier community gallery: evefrontier.com/en/community-gallery. 
+Does not modify game files or affect game integrity.
+-->
 <Package
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
@@ -8,7 +14,7 @@
   
   <Identity
     Name="Ef-Map.EF-MapOverlayHelper"
-    Publisher="CN=EFMapOverlayTestCert"
+    Publisher="CN=9523ACA0-C1D5-4790-88D6-D95FA23F0EF9"
     Version="1.0.0.0" />
   
   <Properties>

@@ -1,5 +1,64 @@
 # Technical Decision Log (EF-Map Overlay)
 
+## 2025-10-30 – Microsoft Store Certification Issues Resolved
+- Goal: Fix certification failures for Microsoft Store submission
+- Files:
+  - Manifest: `packaging/msix/AppxManifest.xml` (fixed XML comment syntax, updated Partner Center identity)
+  - Assets: Deleted placeholder PNGs from repository root (`Square150x150Logo.png`, `Square44x44Logo.png`, `StoreLogo.png`, `Wide310x150Logo.png`)
+  - Resubmission checklist: `releases/STORE_RESUBMISSION_CHECKLIST.md`
+- Diff: 4 files deleted, 1 manifest corrected, 1 checklist created
+- Risk: Low (asset packaging fix + manifest identity update)
+- Gates: build ✅ package ✅ extract-verify ✅ manifest-correct ✅
+- Follow-ups: Upload corrected MSIX to Partner Center, add 2-line dependency disclosure to Store listing
+
+### Certification Issues (Initial Submission 2025-10-30)
+
+**Issue 1: Default/Placeholder Images**
+- **Problem:** Microsoft flagged "default image" showing generic blue square tile icon
+- **Root Cause:** Repository root contained 188-627 byte placeholder PNG files that were packaged instead of branded assets
+- **Expected Assets:** `src/helper/Assets/*.png` (1.4-43 KB branded EF-Map logo files)
+- **Packaged Assets:** Root-level placeholders (created Oct 29 13:51, tiny file sizes)
+- **Fix:** Deleted all placeholder PNGs from repository root; build script now uses only `src/helper/Assets/`
+- **Verification:** Extracted `EFMapHelper-v1.0.0.msix` confirmed correct asset sizes:
+  - `SplashScreen.png`: 43.3 KB
+  - `Square150x150Logo.png`: 6.9 KB
+  - `Square44x44Logo.png`: 1.4 KB
+  - `StoreLogo.png`: 1.6 KB
+  - `Wide310x150Logo.png`: 11.9 KB
+
+**Issue 2: Undisclosed Dependencies**
+- **Policy Violation:** Microsoft policy 10.2.4.1 requires dependency disclosure within first two lines of Store description
+- **Dependency:** Microsoft Visual C++ Redistributable (automatically installed if missing)
+- **Fix:** Created 2-line disclosure for Store listing:
+  ```
+  **Requires:** Microsoft Visual C++ Redistributable (automatically installed if missing) and DirectX 12 (Windows 10 version 2004+).
+  **Bring real-time EF-Map data directly into EVE Frontier.** Windows native application that renders live route guidance, mining/combat telemetry, and session tracking as an in-game overlay—no alt-tabbing required.
+  ```
+- **Rationale:** Satisfies policy requirement while maintaining product pitch seamlessly in second line
+
+### Corrected Package Details
+
+**MSIX Identity (verified via extraction):**
+```xml
+Name="Ef-Map.EF-MapOverlayHelper"
+Publisher="CN=9523ACA0-C1D5-4790-88D6-D95FA23F0EF9"
+Version="1.0.0.0"
+PublisherDisplayName="Ef-Map"
+DisplayName="EF-Map Overlay Helper"
+```
+
+**Package:** `EFMapHelper-v1.0.0.msix` (1.26 MB unsigned Release build)
+- All branded assets verified (no placeholders)
+- Manifest uses correct Partner Center identity values
+- Ready for resubmission with dependency disclosure
+
+### Next Steps
+1. Upload corrected MSIX to Microsoft Partner Center
+2. Update Store listing description with 2-line dependency disclosure
+3. Resubmit for certification (1-3 day turnaround expected)
+
+---
+
 ## 2025-10-29 – MSIX Packaging Complete with UAC Elevation & WindowsApps Workaround
 - Goal: Complete Phase 6 local MSIX packaging with working overlay injection
 - Files:
