@@ -469,32 +469,142 @@ After 3+ hours of failed attempts (immediate log parsing, WebSocket GET on conne
 - Tribe bookmark: Authenticate + join tribe → tick tribe checkbox → add bookmark → verify appears ONLY in tribe folder (not personal).
 - No auth bookmark: Log out → verify tribe checkbox hidden → add bookmark → verify goes to personal folder.
 
-### Phase 6 – Packaging & pre-release readiness
-- Harden the helper tray experience, bundle with an installer, and update download CTA/links inside the EF helper panel.
-- Document installation and smoke steps in both repos; sign binaries when feature set stabilizes.
-- Stand up a signed installer workflow:
-	- Choose installer tech (WiX MSI vs MSIX vs Squirrel) and wire into overlay CI (current lean: Microsoft Store signing pipeline via Azure Code Signing).
-	- Acquire and store Authenticode cert securely; sign helper binaries + installer artifacts.
-	- Host versioned installers on Cloudflare (R2 + Pages Worker) with HTTPS download links surfaced in the helper panel.
-- Convert the helper into a tray-first runtime:
-	- Wrap injector/overlay control inside a GUI-subsystem process so no console window appears.
-	- Register startup (Run key or Startup folder) and tray icon actions (launch overlay, view logs, quit) during install.
-- Bridge browser actions to the installed helper:
-	- Register a custom protocol (`ef-helper://`) for first-run launch from the web app.
-	- Keep/extend the localhost API so the web panel can detect running helpers and trigger overlay attach when available.
-- Plan for updates:
-	- Publish a JSON manifest describing the latest installer; helper tray checks and prompts when a new build is available.
-	- Evaluate automatic differential updates once the installer tech is chosen.
+### Phase 6 – Packaging & pre-release readiness ✅ **IN CERTIFICATION** *(2025-10-30)*
 
-**Validation:** installer builds and installs cleanly; first-run walkthrough launches helper and validates overlay attachment; custom protocol opens the tray host from the web panel; decision logs capture release readiness.
+#### Overview
+Deliver a signed, installable helper package with frictionless first-run experience and automatic updates via **dual distribution**: immediate GitHub Releases (ZIP) + Microsoft Store (MSIX with automatic signing).
+
+#### Distribution Strategy (Dual Path)
+**Chosen approach**: Run both channels simultaneously for maximum reach and flexibility.
+
+| Channel | Format | Signing | Target Audience | Status |
+|---------|--------|---------|----------------|---------|
+| **GitHub Releases** | ZIP (manual install) | Self-signed test cert | Power users, immediate availability | ✅ **LIVE** (v1.0.0) |
+| **Microsoft Store** | MSIX | Microsoft signs during certification | General users, auto-updates | ⏳ **SUBMITTED** (2025-10-30) |
+
+**GitHub Release v1.0.0**: Published at https://github.com/Diabolacal/ef-map-overlay/releases/tag/v1.0.0
+- Contains: ZIP with helper.exe, overlay.dll, injector.exe, PowerShell installation script
+- Installation: Extract → run `install.ps1` (creates shortcuts, registers protocol handler)
+- Users: Available immediately for players who want overlay features now
+
+**Microsoft Store Submission**: Submitted 2025-10-30
+- Package: `EFMapHelper-v1.0.0.msix` (1.3 MB, Release build, unsigned)
+- Publisher: Ef-Map (Individual account, ID: 9523ACA0-C1D5-4790-88D6-D95FA23F0EF9)
+- App Name: "EF-Map Overlay Helper"
+- Certification: Microsoft will sign during review process (1-3 business days expected)
+- Benefits: Automatic updates, trusted certificate, discoverable in Store search
+
+#### Signing Infrastructure
+**GitHub Releases**: Self-signed test certificate (`CN=EF Map Project Test Certificate`)
+- Installed to user's Trusted Root during manual installation
+- Enables MSIX installation without SmartScreen warnings
+- Generated via `src/helper/create_test_cert.ps1`
+
+**Microsoft Store**: Automatic signing by Microsoft during certification
+- No external certificate purchase required
+- Microsoft's trusted certificate chain (trusted by all Windows machines)
+- Zero setup for end users
+
+**Azure Trusted Signing**: Previously considered (~$9.99/month) but replaced by Store approach
+- Store certification provides equivalent trust without monthly fees
+- Self-signed cert sufficient for GitHub Releases (power user audience)
+
+#### Installer Format Decision
+**MSIX validated for process injection compatibility** ✅
+
+After extensive testing with Debug builds:
+- ✅ MSIX packages install successfully with `runFullTrust` capability
+- ✅ DLL injection works correctly (verified with local test certificate)
+- ✅ Overlay renders, input capture functions, tray integration operational
+- ✅ No sandboxing interference with DirectX 12 hooking
+
+**Final decision**: MSIX for both channels (GitHub ZIP extraction + Store distribution)
+
+#### Microsoft Store Submission Details *(2025-10-30)*
+
+**Submission Package**:
+- File: `EFMapHelper-v1.0.0.msix` (1.26 MB unsigned Release build)
+- Package Identity: `Ef-Map.EF-MapOverlayHelper`
+- Version: 1.0.0.0
+- Publisher: `CN=EF-Map, O=EF-Map, C=US` (Microsoft-assigned identity)
+
+**Store Listing Content**:
+- **Description**: "Enhance your EVE Frontier experience with real-time navigation overlays, combat telemetry, and mining efficiency tracking—all rendered directly in-game."
+- **Features**: Route overlay, session tracking, position sync, DPS graphs, mining telemetry (m³/min), non-intrusive HUD, privacy-first (no data collection)
+- **Screenshots**: 4-6 images showing in-game overlay + web app integration (1440p resolution)
+- **Privacy Policy**: https://github.com/Diabolacal/ef-map-overlay (no data collection statement)
+
+**Restricted Capability Justification** (464 characters):
+```
+EF-Map Overlay Helper requires runFullTrust for in-game overlay functionality, identical to Discord, OBS Studio, and NVIDIA overlays. Uses DirectX 12 hooking to render navigation overlays in EVE Frontier via DLL injection for real-time route display and telemetry widgets. NO data collection, all processing is local. Open source: github.com/Diabolacal/ef-map-overlay. Featured on CCP Games' official EVE Frontier community gallery: evefrontier.com/en/community-gallery. Does not modify game files.
+```
+
+**Community Validation**:
+- EF-Map featured on CCP Games' official community gallery: https://evefrontier.com/en/community-gallery
+- Demonstrates developer recognition and community trust
+
+**Certification Timeline**:
+- Submitted: 2025-10-30
+- Expected: 1-3 business days review
+- Next step: If approved → live in Store; if rejected → iterate based on feedback
+
+#### Frictionless Update Strategy
+
+**Microsoft Store** (automatic):
+- Store handles all updates via AppInstaller protocol
+- Users receive updates automatically (configurable in Windows Settings)
+- Zero user action required for new versions
+
+**GitHub Releases** (manual notification):
+- Helper polls version manifest: `https://ef-map.com/api/helper-version`
+- Tray notification: "Update Available" → links to GitHub Releases page
+- User downloads new ZIP manually (or migrates to Store version)
+
+#### Distribution & Updates
+- **Host signed installers** on Cloudflare R2 bucket (`ef-overlay-installers`)
+- **Worker endpoint**: `GET /download/latest` → redirects to current version MSI in R2
+- **Version manifest**: JSON at `/api/helper-version` with latest version, download URL, SHA256 hash
+- **Helper panel CTA**: "Download EF Helper" button links to `/download/latest`
+- **Auto-update**: Helper polls manifest on startup, downloads + launches MSI if newer version available
+
+#### Tray Experience Hardening
+- Convert helper to GUI-subsystem Windows app (no console window on launch)
+- Register `ef-helper://` custom protocol during install for browser → helper bridge
+- Tray menu actions: Launch Overlay, Check for Updates, View Logs, Settings, Quit
+- Optional: Register in Windows startup (Run key) for auto-launch on login
+
+#### First-Run Validation ✅ **COMPLETE**
+
+**GitHub Release Validation** (v1.0.0):
+- ✅ ZIP extraction successful
+- ✅ PowerShell install script creates shortcuts
+- ✅ Custom protocol (`ef-overlay://`) registered
+- ✅ Helper launches without console window
+- ✅ Tray icon displays with EF-Map logo
+- ✅ Overlay injection works (DLL attaches to game process)
+- ✅ Route display functional, F8 toggle operational
+- ✅ Copy system ID to clipboard succeeds
+
+**Microsoft Store Package Validation** (Debug build with test certificate):
+- ✅ MSIX installs successfully (right-click → Install)
+- ✅ Start Menu entry created ("EF Map Overlay Helper")
+- ✅ Helper launches from Start Menu
+- ✅ System tray icon displays correct EF-Map logo (not placeholder)
+- ✅ DLL injection works identically to ZIP version
+- ✅ All overlay features functional (route, telemetry, bookmarks, P-SCAN)
+- ✅ No sandboxing interference with DirectX 12 hooks
+
+**Validation gates passed**: Installer builds + signs cleanly; MSIX installs without admin elevation (user-level install); helper launches without console window; custom protocol triggers helper; overlay attaches and displays route; tray menu actions functional.
 
 ## 8. Tooling & Tech Stack
-- Language: C++20 for DLL & helper core (optionally C# for helper UI via WinUI 3).
-- Hooking: MinHook or Microsoft Detours (DX12 friendly).
-- UI: ImGui (prototype) → evaluate Ultralight/CEF for HTML rendering.
-- Installer: WiX Toolset (MSI) or MSIX + self-updater (Squirrel/Electron-builder) later.
-- Signing: OV/EV Authenticode certificate via DigiCert/Sectigo.
-- Logging: spdlog / ETW for DLL; helper log file under `%LOCALAPPDATA%/EFOverlay`.
+- **Language**: C++20 for DLL & helper core.
+- **Hooking**: MinHook (DX12 friendly, current implementation).
+- **UI**: ImGui (current prototype renderer).
+- **Installer**: WiX Toolset (MSI) for initial release; MSIX + Microsoft Store under evaluation for future frictionless updates.
+- **Signing**: Azure Trusted Signing (~$9.99/month, includes identity verification + certificate provisioning + signing API). Documentation: https://learn.microsoft.com/en-us/azure/trusted-signing/
+- **Distribution**: Cloudflare R2 (installer hosting) + Pages Worker (download endpoint + version manifest API).
+- **Auto-updates**: Custom version-check logic (helper polls manifest on startup) → download MSI → launch installer. Future: migrate to MSIX AppInstaller if injection compatibility validated.
+- **Logging**: spdlog for DLL & helper; log files in `%LOCALAPPDATA%/EFOverlay`.
 
 ## 9. Risks & Mitigations
 | Risk | Mitigation |

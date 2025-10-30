@@ -1,0 +1,60 @@
+EF-Map Overlay Helper requires runFullTrust for in-game overlay functionality, identical to Discord, OBS Studio, and NVIDIA overlays. Uses DirectX 12 hooking to render navigation overlays in EVE Frontier via DLL injection for real-time route display and telemetry widgets. NO data collection, all processing is local. Open source: github.com/Diabolacal/ef-map-overlay. Featured on CCP Games' official EVE Frontier community gallery: evefrontier.com/en/community-gallery. Does not modify game files or
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  IgnorableNamespaces="uap rescap desktop">
+  
+  <Identity
+    Name="Ef-Map.EF-MapOverlayHelper"
+    Publisher="CN=9523ACA0-C1D5-4790-88D6-D95FA23F0EF9"
+    Version="1.0.0.0" />
+  
+  <Properties>
+    <DisplayName>EF-Map Overlay Helper</DisplayName>
+    <PublisherDisplayName>Ef-Map</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+    <Description>In-game overlay for EVE Frontier that displays routing and telemetry data from ef-map.com</Description>
+  </Properties>
+  
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.22621.0" />
+  </Dependencies>
+  
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+  
+  <Applications>
+    <Application Id="EFMapOverlayHelper" Executable="ef-overlay-helper.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="EF Map Overlay Helper"
+        Description="In-game overlay for EVE Frontier"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" />
+        <uap:SplashScreen Image="Assets\SplashScreen.png" />
+      </uap:VisualElements>
+      
+      <Extensions>
+        <!-- Protocol handler for ef-overlay:// -->
+        <uap:Extension Category="windows.protocol">
+          <uap:Protocol Name="ef-overlay">
+            <uap:DisplayName>EF Map Overlay</uap:DisplayName>
+          </uap:Protocol>
+        </uap:Extension>
+        
+        <!-- Run at startup (optional) -->
+        <desktop:Extension Category="windows.startupTask" Executable="ef-overlay-helper.exe" EntryPoint="Windows.FullTrustApplication">
+          <desktop:StartupTask TaskId="EFMapOverlayStartup" Enabled="false" DisplayName="EF Map Overlay Helper" />
+        </desktop:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+  
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>
