@@ -33,7 +33,7 @@ Does not modify game files or affect game integrity.
   </Resources>
   
   <Applications>
-    <Application Id="EFMapOverlayHelper" Executable="ef-overlay-helper.exe" EntryPoint="Windows.FullTrustApplication">
+    <Application Id="EFMapOverlayHelper" Executable="ef-overlay-tray.exe" EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements
         DisplayName="EF Map Overlay Helper"
         Description="In-game overlay for EVE Frontier"
@@ -53,7 +53,7 @@ Does not modify game files or affect game integrity.
         </uap:Extension>
         
         <!-- Run at startup (optional) -->
-        <desktop:Extension Category="windows.startupTask" Executable="ef-overlay-helper.exe" EntryPoint="Windows.FullTrustApplication">
+        <desktop:Extension Category="windows.startupTask" Executable="ef-overlay-tray.exe" EntryPoint="Windows.FullTrustApplication">
           <desktop:StartupTask TaskId="EFMapOverlayStartup" Enabled="false" DisplayName="EF Map Overlay Helper" />
         </desktop:Extension>
       </Extensions>

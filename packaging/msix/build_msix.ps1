@@ -33,7 +33,7 @@ New-Item -ItemType Directory -Path "$StagingDir\Assets" -Force | Out-Null
 # Copy binaries
 Write-Host "Copying binaries..."
 $BinariesToCopy = @(
-    @{ Source = "$BuildDir\helper\$BuildConfig\ef-overlay-helper.exe"; Dest = "ef-overlay-helper.exe" }
+    @{ Source = "$BuildDir\helper\$BuildConfig\ef-overlay-tray.exe"; Dest = "ef-overlay-tray.exe" }
     @{ Source = "$BuildDir\overlay\$BuildConfig\ef-overlay.dll"; Dest = "ef-overlay.dll" }
     @{ Source = "$BuildDir\injector\$BuildConfig\ef-overlay-injector.exe"; Dest = "ef-overlay-injector.exe" }
 )
