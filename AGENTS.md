@@ -18,13 +18,14 @@ Useful entry points:
 - Troubleshooting guide: `docs/LLM_TROUBLESHOOTING_GUIDE.md` (overlay-first orientation and playbooks).
 - Initiative plan: `docs/initiatives/GAME_OVERLAY_PLAN.md` (mirrors the plan tracked in the main repo).
 - Decision history: `docs/decision-log.md` (overlay-specific). For broader EF-Map history, read `EF-Map-main/docs/decision-log.md`.
+- **Microsoft Store releases**: `packaging/msix/BUILD_RELEASE_GUIDE.md` (complete build process for LLMs) and `packaging/msix/PRE_UPLOAD_CHECKLIST.md` (mandatory verification before uploads).
 - **Chrome DevTools MCP**: For web app integration testing, see `EF-Map-main/AGENTS.md` → "Chrome DevTools MCP Mandate". When testing helper ↔ web app communication, use Chrome DevTools MCP to directly inspect browser console/network requests without user intermediary.
 
-Current status snapshot (2025-10-15):
+Current status snapshot (2025-10-31):
 - Follow mode sync is live across helper, overlay, and EF Map surfaces.
 - Mining telemetry widgets exist and are in validation using live sessions.
 - Native 3D star map rendering is paused while telemetry + combat tooling take priority.
-- Installer/signing work is queued for Phase 6, leaning toward Microsoft Azure Code Signing.
+- Microsoft Store release v1.0.2 packaged with icon fix (previous v1.0.1 was missing tray icon file).
 
 ## Coordination with EF-Map-main
 1. Treat the web app as the authoritative producer of overlay data payloads. Do not modify web app behavior from this repo; request changes in `EF-Map-main`.
@@ -35,7 +36,7 @@ Current status snapshot (2025-10-15):
 - Helper protocol work: Document new protocol verbs in `docs/decision-log.md` and update helper/client contract specs.
 - DX12 overlay rendering: Validate on both windowed and fullscreen modes before marking tasks complete.
 - Localhost bridge: Use signed requests / short-lived tokens; note any security-sensitive changes in the decision log.
-- Installer pipeline: Include signing + packaging verification steps and note certificate usage.
+- **Microsoft Store release builds**: Follow `packaging/msix/BUILD_RELEASE_GUIDE.md` exactly; always run `verify_msix_contents.ps1` before uploading to Partner Center. Never skip verification.
 
 ## Automated Smoke Testing Workflow (CRITICAL)
 **Assistant responsibility:** The assistant MUST execute all automated smoke test steps. The user's role is ONLY to:

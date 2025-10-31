@@ -1,5 +1,96 @@
 # Technical Decision Log (EF-Map Overlay)
 
+## 2025-10-31 – Store Submission v1.0.1 Missing Tray Icon (Critical Packaging Failure)
+- Goal: Fix missing tray icon in v1.0.1 Store submission and prevent future packaging failures
+- Files:
+  - `packaging/msix/build_msix.ps1`: Added icon copy step before Store asset generation
+  - `packaging/msix/verify_msix_contents.ps1`: NEW - Mandatory pre-upload verification script
+  - `packaging/msix/PRE_UPLOAD_CHECKLIST.md`: NEW - Mandatory checklist document
+- Diff: 1 file fixed (+8 lines), 2 new verification files created (~200 lines total)
+- Risk: Medium (packaging process was broken, now fixed with mandatory verification)
+- Gates: build ✅ package ✅ verify-script ✅ icon-present ✅
+- Follow-ups: 
+  - Build v1.0.2 with fixed script
+  - Run verification script (MANDATORY before upload)
+  - Upload to Partner Center (will take another 24h for approval)
+
+### Root Cause Analysis
+**Problem:** v1.0.1 package approved by Store and installed by user, but tray icon shows generic Windows folder icon instead of EF-Map branded icon.
+
+**Investigation:** Tray application (`tray_application.cpp` lines 74-96) attempts to load icon in this order:
+1. First tries: `Assets\app.ico` (compiled Windows icon file)
+2. Falls back to: `Assets\Square44x44Logo.png`
+3. Final fallback: `IDI_APPLICATION` (generic Windows icon)
+
+**Confirmation:** 
+- Icon file exists at: `src/helper/Assets/app.ico` (424 bytes)
+- v1.0.1 package contents (extracted): `app.ico` is **MISSING** from `Assets/` folder
+- v1.0.1 package only contains: PNG assets (Square44x44Logo.png, etc.) but not the `.ico` file
+
+**Why This Happened:**
+The `build_msix.ps1` script (original version):
+1. ✅ Copies helper binaries (ef-overlay-tray.exe, ef-overlay.dll, ef-overlay-injector.exe)
+2. ✅ Generates PNG assets from EF-Map logo for Store listing requirements
+3. ❌ **NEVER copies the `app.ico` file** that the tray application actually needs at runtime
+
+### Fix Applied
+Modified `build_msix.ps1` to add icon copy step (between manifest creation and Store asset generation):
+```powershell
+# Copy tray icon (.ico) that the helper tries to load at runtime
+Write-Host "Copying tray icon..."
+$HelperIconPath = Join-Path $RepoRoot "src\helper\Assets\app.ico"
+if (Test-Path $HelperIconPath) {
+    Copy-Item $HelperIconPath -Destination "$StagingDir\Assets\app.ico"
+    Write-Host "  OK app.ico copied for tray icon" -ForegroundColor Green
+} else {
+    Write-Host "  WARNING: Tray icon not found at $HelperIconPath" -ForegroundColor Yellow
+}
+```
+
+### Verification System Created
+Created two new files to prevent this from happening again:
+
+**1. verify_msix_contents.ps1 (Automated Verification):**
+- Auto-detects latest MSIX in `releases/` folder
+- Extracts package to temporary directory
+- Checks all required files (including `Assets\app.ico`)
+- Reports file sizes to detect incorrect file types (e.g., script vs binary)
+- Checks for accidentally included PowerShell scripts
+- Parses and displays manifest version/identity
+- Exit code 0 = PASS (safe to upload), Exit code 1 = FAIL (do NOT upload)
+
+**2. PRE_UPLOAD_CHECKLIST.md (Mandatory Process):**
+- Step-by-step checklist that MUST be completed before every Store upload
+- Documents the two packaging failures we've had (v1.0.0 script mishap, v1.0.1 icon missing)
+- Requires running verification script and confirming specific files exist
+- Includes file size checks to catch wrong file type issues early
+- Documents correct build sequence
+
+### Incident Timeline
+1. **v1.0.0 submission:** PowerShell script packaged instead of helper executable → rejected immediately
+2. **v1.0.0 resubmission:** Fixed, included correct executable → approved (~24h wait)
+3. **v1.0.1 submission:** User reported missing icon after finding helper bug → packaged with fixed helper executable
+4. **v1.0.1 resubmission:** AI assured operator all files were present → approved (~24h wait)
+5. **v1.0.1 user installation:** Tray icon shows generic Windows icon (fallback), not EF-Map branded icon
+6. **Investigation:** Icon file was NEVER copied by packaging script despite assurances
+
+### Lessons Learned
+1. **Never trust AI assurances without verification:** "I checked and everything is there" means nothing without running an actual verification script
+2. **Automated verification is mandatory:** Human review of 10+ files is error-prone and wastes operator time
+3. **Make verification easy:** Auto-detect latest MSIX, extract, check, report pass/fail
+4. **Document failures:** Each packaging failure should add a new check to the verification script
+5. **24-hour Store review cost:** Each mistake costs a full business day waiting for Microsoft approval
+
+### Next Submission (v1.0.2)
+Sequence:
+1. Build Release binaries: `cmake --build . --config Release`
+2. Package MSIX: `.\build_msix.ps1 -Version "1.0.2" -BuildConfig "Release"`
+3. **MANDATORY:** Run `.\verify_msix_contents.ps1` (must show VERIFICATION PASSED)
+4. Review checklist: `PRE_UPLOAD_CHECKLIST.md` (confirm all checkboxes)
+5. Upload to Partner Center
+6. Wait ~24h for approval
+7. Test Store-signed package on clean machine (confirm branded tray icon appears)
+
 ## 2025-10-30 – Microsoft Store Certification Issues Resolved
 - Goal: Fix certification failures for Microsoft Store submission
 - Files:

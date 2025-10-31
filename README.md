@@ -75,10 +75,19 @@ See detailed smoke test procedures in the full README sections below (sections r
 
 ## 📚 Documentation
 
-- **[AGENTS.md](AGENTS.md)** – Workflow guardrails for contributors
+### For Users
+- **[Microsoft Store Listing](https://apps.microsoft.com/detail/9NP71MBTF6GF)** – Official Store page with screenshots
+- **[Overlay Plan](docs/initiatives/GAME_OVERLAY_PLAN.md)** – Feature roadmap with phase status
+
+### For Contributors
+- **[AGENTS.md](AGENTS.md)** – Workflow guardrails for AI agents and contributors
 - **[Troubleshooting Guide](docs/LLM_TROUBLESHOOTING_GUIDE.md)** – Architecture overview + diagnostic paths
-- **[Overlay Plan](docs/initiatives/GAME_OVERLAY_PLAN.md)** – Full roadmap with phase status
 - **[Decision Log](docs/decision-log.md)** – Technical decision history
+
+### For Microsoft Store Releases (LLMs/Maintainers)
+- **[BUILD_RELEASE_GUIDE.md](packaging/msix/BUILD_RELEASE_GUIDE.md)** – Complete process for building and packaging Store releases
+- **[PRE_UPLOAD_CHECKLIST.md](packaging/msix/PRE_UPLOAD_CHECKLIST.md)** – Mandatory verification before uploading to Partner Center
+- **[verify_msix_contents.ps1](packaging/msix/verify_msix_contents.ps1)** – Automated verification script (run before every upload)
 
 ## 🗺️ Related Projects
 

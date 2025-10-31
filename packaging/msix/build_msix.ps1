@@ -60,6 +60,16 @@ $ManifestContent = $ManifestContent -replace '<PublisherDisplayName>[^<]*</Publi
 $Utf8NoBom = New-Object System.Text.UTF8Encoding $false
 [System.IO.File]::WriteAllText("$StagingDir\AppxManifest.xml", $ManifestContent, $Utf8NoBom)
 
+# Copy tray icon (.ico) that the helper tries to load at runtime
+Write-Host "Copying tray icon..."
+$HelperIconPath = Join-Path $RepoRoot "src\helper\Assets\app.ico"
+if (Test-Path $HelperIconPath) {
+    Copy-Item $HelperIconPath -Destination "$StagingDir\Assets\app.ico"
+    Write-Host "  OK app.ico copied for tray icon" -ForegroundColor Green
+} else {
+    Write-Host "  WARNING: Tray icon not found at $HelperIconPath" -ForegroundColor Yellow
+}
+
 # Create package assets from EF-Map logo
 Write-Host "Creating package assets from EF-Map logo..."
 
