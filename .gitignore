@@ -15,3 +15,8 @@
 /bin/
 /obj/
 *.log
+
+# Release artifacts - temp extraction/verification folders
+releases/temp_*/
+releases/extracted_*/
+packaging/msix/extracted_*/
