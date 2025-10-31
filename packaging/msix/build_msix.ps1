@@ -3,8 +3,7 @@
 
 param(
     [string]$Version = "1.0.0",
-    [string]$BuildConfig = "Release",
-    [string]$PublisherName = "CN=YOUR_NAME_HERE"  # Will be replaced during Store submission
+    [string]$BuildConfig = "Release"
 )
 
 $ErrorActionPreference = "Stop"
@@ -53,7 +52,7 @@ Write-Host "Creating manifest..."
 $ManifestContent = Get-Content "$PackagingDir\AppxManifest.xml" -Raw
 # Replace Identity Version only (not XML declaration version!)
 $ManifestContent = $ManifestContent -replace '<Identity([^>]*?)Version="[\d\.]+"', "<Identity`$1Version=`"$Version.0`""
-$ManifestContent = $ManifestContent -replace 'Publisher="[^"]*"', "Publisher=`"$PublisherName`""
+# DO NOT modify Publisher - it's already set correctly in AppxManifest.xml from Partner Center
 # PublisherDisplayName should always be "Ef-Map" (from Partner Center)
 $ManifestContent = $ManifestContent -replace '<PublisherDisplayName>[^<]*</PublisherDisplayName>', "<PublisherDisplayName>Ef-Map</PublisherDisplayName>"
 # Write with UTF-8 NO BOM to avoid XML parser issues

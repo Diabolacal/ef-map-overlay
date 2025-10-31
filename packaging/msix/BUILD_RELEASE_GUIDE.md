@@ -14,6 +14,7 @@ There is **ONLY ONE** packaging script: `build_msix.ps1`
 Previous failures occurred because:
 1. v1.0.0: Wrong file type was packaged (PowerShell script instead of executable)
 2. v1.0.1: Tray icon (`app.ico`) was missing from the package despite assurances
+3. v1.0.2 (first attempt): Publisher name was overwritten with placeholder value, causing Store validation errors
 
 **Never trust verbal confirmation** - always run the verification script.
 
@@ -73,8 +74,15 @@ Verifying required files...
   OK Assets\app.ico (0.4 KB)            ← MUST be present
   [... other files ...]
 
+Checking manifest...
+  Version: 1.0.2.0
+  Publisher: CN=9523ACA0-C1D5-4790-88D6-D95FA23F0EF9  ← CRITICAL: Must match Partner Center
+  Display Name: EF-Map Overlay Helper
+
 VERIFICATION PASSED
 ```
+
+**CRITICAL**: The Publisher MUST be `CN=9523ACA0-C1D5-4790-88D6-D95FA23F0EF9`. If it shows `CN=YOUR_NAME_HERE` or any other value, the package will be REJECTED by the Store.
 
 **If verification FAILS**: DO NOT upload. Fix the issue, rebuild, and re-verify.
 
@@ -166,6 +174,26 @@ if (Test-Path $HelperIconPath) {
 
 **Fix**: Delete the package, rebuild with `--config Release`, repackage, re-verify.
 
+### Issue: Store validation errors - "Invalid package publisher name" or "Invalid package family name"
+
+**Cause**: The `build_msix.ps1` script is incorrectly modifying the Publisher field in the manifest.
+
+**Symptoms**:
+- Verification script shows: `Publisher: CN=YOUR_NAME_HERE` (WRONG)
+- Store upload fails with validation errors about publisher/family name mismatch
+
+**Fix**: 
+1. Check that `build_msix.ps1` does NOT have a line like:
+   ```powershell
+   $ManifestContent = $ManifestContent -replace 'Publisher="[^"]*"', "Publisher=`"$PublisherName`""
+   ```
+2. The script should have a comment instead:
+   ```powershell
+   # DO NOT modify Publisher - it's already set correctly in AppxManifest.xml from Partner Center
+   ```
+3. The base `AppxManifest.xml` file already has the correct Publisher from Partner Center
+4. Rebuild and re-verify - Publisher should show: `CN=9523ACA0-C1D5-4790-88D6-D95FA23F0EF9`
+
 ## After Upload to Store
 
 1. Wait for Microsoft certification (~24 hours)
@@ -183,8 +211,9 @@ if (Test-Path $HelperIconPath) {
 | 1.0.0 | 2025-10-30 | Initial submission (rejected - wrong file type) |
 | 1.0.0 | 2025-10-30 | Resubmission (approved - correct executable) |
 | 1.0.1 | 2025-10-31 | Bug fix (approved - but missing tray icon) |
-| 1.0.2 | 2025-10-31 | Icon fix (includes app.ico for tray icon) |
+| 1.0.2 (attempt 1) | 2025-10-31 | Icon fix (rejected - Publisher overwritten with placeholder) |
+| 1.0.2 (attempt 2) | 2025-10-31 | Fixed Publisher + icon (ready for upload) |
 
 ---
 
-**Last updated**: 2025-10-31 (After v1.0.2 icon fix and Release build)
+**Last updated**: 2025-10-31 (After v1.0.2 Publisher fix - removed script line that overwrote manifest Publisher)

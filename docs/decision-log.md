@@ -1,5 +1,60 @@
 # Technical Decision Log (EF-Map Overlay)
 
+## 2025-10-31 – Store Submission v1.0.2 Publisher Validation Error (Packaging Script Bug)
+- Goal: Fix Store validation errors for v1.0.2 submission caused by incorrect Publisher value
+- Files:
+  - `packaging/msix/build_msix.ps1`: Removed line that overwrote Publisher with placeholder value
+  - `packaging/msix/BUILD_RELEASE_GUIDE.md`: Added troubleshooting for Publisher validation errors
+- Diff: 1 line removed from script, troubleshooting section added to guide
+- Risk: Low (simple fix - stop overwriting correct manifest value)
+- Gates: build ✅ package ✅ verify-script ✅ publisher-correct ✅
+- Follow-ups: Upload corrected v1.0.2 to Partner Center
+
+### Root Cause Analysis
+**Problem:** Store upload validation rejected v1.0.2 with errors:
+- Invalid package family name (expected: `Ef-Map.EF-MapOverlayHelper_r3vrm21jghstm`)
+- Invalid package publisher name (expected: `CN=9523ACA0-C1D5-4790-88D6-D95FA23F0EF9`, got: `CN=YOUR_NAME_HERE`)
+
+**Investigation:**
+- Base `AppxManifest.xml` has correct Publisher from Partner Center: `CN=9523ACA0-C1D5-4790-88D6-D95FA23F0EF9`
+- `build_msix.ps1` line 58 was overwriting it: `$ManifestContent = $ManifestContent -replace 'Publisher="[^"]*"', "Publisher=`"$PublisherName`""` 
+- Default parameter value `$PublisherName = "CN=YOUR_NAME_HERE"` was being used
+- Result: Correct Publisher from base manifest was replaced with placeholder
+
+**Why This Happened:**
+The script was designed to allow customization but defaulted to a placeholder value. The base manifest already had the correct value from Partner Center, so the replacement was unnecessary and harmful.
+
+### Fix Applied
+1. Removed the Publisher replacement line from `build_msix.ps1`
+2. Removed the unused `$PublisherName` parameter
+3. Added comment: `# DO NOT modify Publisher - it's already set correctly in AppxManifest.xml from Partner Center`
+
+**Before (WRONG):**
+```powershell
+$ManifestContent = $ManifestContent -replace 'Publisher="[^"]*"', "Publisher=`"$PublisherName`""
+```
+
+**After (CORRECT):**
+```powershell
+# DO NOT modify Publisher - it's already set correctly in AppxManifest.xml from Partner Center
+```
+
+### Verification
+After rebuild, verification script confirmed:
+```
+Publisher: CN=9523ACA0-C1D5-4790-88D6-D95FA23F0EF9  ✓
+```
+
+### Lessons Learned
+1. **Base manifest is authoritative**: The `AppxManifest.xml` file contains the correct Partner Center identity; don't override it
+2. **Verification must check Publisher**: The verification script now displays Publisher value to catch this
+3. **Default parameters are dangerous**: Placeholder values like `CN=YOUR_NAME_HERE` should trigger errors, not be silently used
+4. **Package family name is derived**: The family name hash is generated from Name + Publisher, so wrong Publisher breaks both validations
+
+### Updated Documentation
+- `BUILD_RELEASE_GUIDE.md`: Added troubleshooting section for Publisher validation errors
+- Version history updated to show v1.0.2 had two attempts (first rejected, second corrected)
+
 ## 2025-10-31 – Store Submission v1.0.1 Missing Tray Icon (Critical Packaging Failure)
 - Goal: Fix missing tray icon in v1.0.1 Store submission and prevent future packaging failures
 - Files:
