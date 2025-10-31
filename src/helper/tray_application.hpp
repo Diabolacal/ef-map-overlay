@@ -25,10 +25,13 @@ private:
         Stop,
         SampleState,
         Inject,
-        OpenLogs,
+        OpenGameLogs,
+        OpenHelperLogs,
         CopyDiagnostics,
         OpenTelemetryHistory,
         ResetTelemetry,
+        ToggleDebugLogging,
+        ExportDebugLogs,
         Exit
     };
 
@@ -60,6 +63,16 @@ private:
 
     void setWindowInstance();
     void clearWindowInstance();
+    
+    // Config persistence
+    std::filesystem::path getConfigPath() const;
+    bool loadConfig();
+    void saveConfig();
+    void toggleDebugLogging();
+    void exportDebugLogs();
+    std::string generateSystemInfo() const;
+    std::string sanitizePath(const std::string& path) const;
+    std::string sanitizeJson(const std::string& json) const;
 
     HINSTANCE hInstance_;
     HWND hwnd_{nullptr};
@@ -67,4 +80,5 @@ private:
     HelperRuntime& runtime_;
     bool iconAdded_{false};
     UINT_PTR statusTimerId_{0};
+    bool debugLoggingEnabled_{false};
 };

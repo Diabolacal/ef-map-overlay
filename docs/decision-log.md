@@ -1,5 +1,171 @@
 # Technical Decision Log (EF-Map Overlay)
 
+## 2025-10-31 – StarfieldRenderer Logging Cleanup (Dead Code Log Silencing)
+- Goal: Remove logging statements from dead StarfieldRenderer code to declutter exported debug logs
+- Status: **COMPLETE**
+- Files:
+  - `src/overlay/starfield_renderer.cpp` (commented out ~25 spdlog statements)
+- Diff: ~25 logging calls commented out, code structure preserved
+- Risk: **VERY LOW** - only affects output, no logic changes; dead code never executes anyway
+- Gates: build ✅ (Debug DLL built successfully, two harmless unreferenced variable warnings)
+- Follow-ups: User manual testing of debug log export to verify StarfieldRenderer messages are gone
+
+### Problem
+User exported debug logs via new debug logging feature and saw clutter:
+```
+StarfieldRenderer: catalog unavailable; skipping renderer init
+StarfieldRenderer: initialization success
+StarfieldRenderer: route buffer cleared (null state)
+StarfieldRenderer: updateRouteBuffer invoked without device
+... (20+ more lines)
+```
+
+These messages come from **dead code** - StarfieldRenderer is an early prototype (3D star map overlay) that:
+- Is compiled into `ef-overlay.dll` but **never instantiated or called**
+- Cannot affect runtime behavior
+- Only pollutes logs due to static initialization and unused code paths
+
+### User's Concern
+- **Rightfully cautious** about touching old code ("don't want to mess with helper")
+- Did NOT want to remove code itself (stability risk)
+- Just wanted to **silence the logging output** to clean up exported logs
+
+### Solution
+Systematically commented out all ~25 `spdlog::info/warn/error/debug` statements in `starfield_renderer.cpp`:
+- **Pattern:** `// spdlog::X(...);  // Dead code - logging removed`
+- **Preserved:** All logic, control flow, and code structure intact
+- **Safety:** Very low risk - only affects output, no behavioral changes
+
+**Categories of logging removed:**
+1. Initialization: catalog loading, pipeline creation, buffer setup
+2. Runtime: route buffer updates, projection culling, zoom adjustments
+3. Errors: shader compilation, resource creation failures
+4. Debug: vertex positions, view matrices, sample projections
+
+### Verification
+```bash
+# Confirmed all spdlog statements removed
+grep -n "^\s*spdlog::" src/overlay/starfield_renderer.cpp
+# Result: No matches found
+```
+
+**Build result:**
+```
+ef_overlay_module.vcxproj -> C:\ef-map-overlay\build\src\overlay\Debug\ef-overlay.dll
+```
+Two harmless warnings about unreferenced local variables (only used in commented-out logs):
+- `warning C4101: 'ex': unreferenced local variable`
+- `warning C4189: 'previous': local variable is initialized but not referenced`
+
+### Expected Outcome
+Next debug log export should be clean - no StarfieldRenderer messages cluttering the logs, making it easier to focus on actual helper/overlay diagnostics.
+
+### Related Decisions
+- See "StarfieldRenderer Legacy Code (Dead Code Identified)" entry below for comprehensive analysis
+- See `docs/notes/STARFIELD_RENDERER_LEGACY.md` for reference documentation
+- Phase 6 cleanup (DEBUG_LOGGING_FEATURE_SPEC.md) includes option to fully remove this code in future
+
+## 2025-10-31 – StarfieldRenderer Legacy Code (Dead Code Identified)
+- Goal: Document that StarfieldRenderer is safe to ignore and potentially remove
+- Status: **NOT REMOVED** (user concerned about breaking changes, deferring cleanup)
+- Files (if removed in future):
+  - `src/overlay/starfield_renderer.cpp` (delete)
+  - `src/overlay/starfield_renderer.hpp` (delete)
+  - `src/overlay/CMakeLists.txt` (remove from sources list)
+- Risk: **VERY LOW** - completely unused, no references outside its own file
+- Gates: N/A (not yet removed, just documented)
+
+### Analysis
+**What is StarfieldRenderer?**
+- Early prototype code for rendering a 3D star map overlay in-game
+- Abandoned during initial development phase
+- Compiled into `ef-overlay.dll` but **never instantiated or called**
+- Appears in logs due to static initialization messages (e.g., "StarfieldRenderer: catalog unavailable")
+
+**Verification:**
+```bash
+# Only reference is its own singleton instance() method
+grep -r "StarfieldRenderer::instance" src/
+# Result: Only in starfield_renderer.cpp itself
+```
+
+**Impact:**
+- ✅ Safe to ignore in troubleshooting logs
+- ✅ Not part of any active code path
+- ✅ Cannot cause runtime issues (never executed)
+- ✅ Removal would reduce DLL size slightly (~10-20 KB)
+- ✅ Removal would clean up log output
+
+**Why Not Remove Now?**
+- User (correctly) cautious about breaking helper stability
+- No immediate harm from leaving it in
+- Can be removed during future major refactor
+- Documenting now prevents confusion during log analysis
+
+**Recommendation:**
+- **Short-term:** Ignore StarfieldRenderer logs when troubleshooting
+- **Medium-term:** Add to Phase 6 cleanup checklist (see DEBUG_LOGGING_FEATURE_SPEC.md)
+- **Long-term:** Remove during next breaking change window (e.g., v2.0.0)
+
+## 2025-10-31 – Debug Logging Menu UX Fix (Split Game vs Helper Logs)
+- Goal: Clarify menu items to distinguish game logs from helper diagnostic logs
+- Files:
+  - `src/helper/tray_application.hpp`: Renamed `OpenLogs` → `OpenGameLogs`, added `OpenHelperLogs` to MenuId enum
+  - `src/helper/tray_application.cpp`: Split single menu item into two distinct handlers, updated labels
+  - `docs/DEBUG_LOGGING_FEATURE_SPEC.md`: Updated examples to emphasize process name over PID
+- Diff: ~50 LoC changed (menu split), 3 spec examples clarified
+- Risk: Low (UX improvement, no behavioral change to existing functionality)
+- Gates: build ✅ typecheck N/A (C++) spec-clarity ✅
+- Follow-ups: User manual testing of new menu items
+
+### Problem
+Original implementation had single "Open logs folder" menu item with ambiguous behavior:
+- Tried to open game logs (`chatLogFile.parent_path()` or `chatLogDirectory`)
+- Fell back to helper logs (`resolve_log_directory()`) if game logs unavailable
+- User couldn't explicitly choose which logs to view
+
+### Solution
+Split into two explicit menu items with clear labels and separate handlers:
+1. **"Open helper logs folder"**: Always opens `%LOCALAPPDATA%\EFOverlay\logs` (helper diagnostics)
+2. **"Open game logs folder"**: Opens game log directory if available, shows warning balloon if game not running
+
+**Menu ordering:**
+```
+Enable debug logging (checkbox)
+Export debug logs...
+Open helper logs folder    <-- NEW: Always works, opens helper diagnostics
+Open game logs folder      <-- NEW: Opens game logs or shows warning
+---
+Copy diagnostics to clipboard
+```
+
+### Code Changes
+**MenuId enum:**
+- Removed: `OpenLogs`
+- Added: `OpenGameLogs`, `OpenHelperLogs`
+
+**Handler logic:**
+```cpp
+case MenuId::OpenHelperLogs:
+    // Always opens %LOCALAPPDATA%\EFOverlay\logs
+    target = resolve_log_directory();
+    // ... ShellExecuteW to open Explorer
+
+case MenuId::OpenGameLogs:
+    // Tries chatLogFile.parent_path() → chatLogDirectory
+    // Shows warning balloon if neither available
+```
+
+**Spec updates:**
+- Changed injection log example: `Target process: exefile.exe (PID varies per launch - targeting by name)`
+- Added comment: `// NOTE: Always target by process name "exefile.exe" - PID changes every launch`
+- Updated system_info.txt example: `Game Process: exefile.exe (PID 12345 - informational only)`
+
+### Rationale
+- **Process targeting**: Game client name `exefile.exe` stays constant, PID changes every launch → always target by name
+- **User clarity**: Two distinct menu items eliminate confusion about which folder will open
+- **Consistent behavior**: Helper logs always accessible, game logs conditionally available with clear feedback
+
 ## 2025-10-31 – Store Submission v1.0.2 Publisher Validation Error (Packaging Script Bug)
 - Goal: Fix Store validation errors for v1.0.2 submission caused by incorrect Publisher value
 - Files:

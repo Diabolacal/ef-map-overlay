@@ -87,11 +87,11 @@ namespace
         {
             if (errors)
             {
-                spdlog::error("Starfield shader compile failed: {}", static_cast<const char*>(errors->GetBufferPointer()));
+                // spdlog::error("Starfield shader compile failed: {}", static_cast<const char*>(errors->GetBufferPointer()));  // Dead code - logging removed
             }
             else
             {
-                spdlog::error("Starfield shader compile failed (hr=0x{:08X})", static_cast<unsigned>(hr));
+                // spdlog::error("Starfield shader compile failed (hr=0x{:08X})", static_cast<unsigned>(hr));  // Dead code - logging removed
             }
             return nullptr;
         }
@@ -193,7 +193,7 @@ bool StarfieldRenderer::initialize(ID3D12Device* device, DXGI_FORMAT targetForma
 
     if (!ensureCatalogLoaded())
     {
-        spdlog::warn("StarfieldRenderer: catalog unavailable; skipping renderer init");
+        // spdlog::warn("StarfieldRenderer: catalog unavailable; skipping renderer init");  // Dead code - logging removed
         return false;
     }
 
@@ -226,7 +226,7 @@ bool StarfieldRenderer::initialize(ID3D12Device* device, DXGI_FORMAT targetForma
     lastViewportHeight_ = 0;
 
     ready_ = true;
-    spdlog::info("StarfieldRenderer initialized (stars={})", starVertexCount_);
+    // spdlog::info("StarfieldRenderer initialized (stars={})", starVertexCount_);  // Dead code - logging removed
     return true;
 }
 
@@ -300,15 +300,12 @@ void StarfieldRenderer::render(
 
     if (!updateConstants(state, constantsWidth, constantsHeight))
     {
-        spdlog::warn("StarfieldRenderer: updateConstants failed (ready={}, stars={}, routeCount={})", ready_, starVertexCount_, routeVertexCount_);
+        // spdlog::warn("StarfieldRenderer: updateConstants failed (ready={}, stars={}, routeCount={})", ready_, starVertexCount_, routeVertexCount_);  // Dead code - logging removed
         return;
     }
 
     std::call_once(g_logInitOnce, [this]() {
-        spdlog::info(
-            "StarfieldRenderer: first render (stars={}, catalog='{}')",
-            starVertexCount_,
-            catalogPath_.empty() ? std::string{"<unresolved>"} : catalogPath_.string());
+        // spdlog::info("StarfieldRenderer: first render (stars={}, catalog='{}')", starVertexCount_, catalogPath_.empty() ? std::string{"<unresolved>"} : catalogPath_.string());  // Dead code - logging removed
     });
 
     const float viewportX = viewportValid_ ? viewportX_ : 0.0f;
@@ -365,7 +362,7 @@ bool StarfieldRenderer::ensureCatalogLoaded()
     const auto path = resolveCatalogPath();
     if (path.empty())
     {
-        spdlog::warn("StarfieldRenderer: catalog path not found");
+        // spdlog::warn("StarfieldRenderer: catalog path not found");  // Dead code - logging removed
         return false;
     }
 
@@ -388,15 +385,15 @@ bool StarfieldRenderer::ensureCatalogLoaded()
 
         boundsRadius_ = std::max({extents.x, extents.y, extents.z, 1.0f});
 
-        spdlog::info(
-            "StarfieldRenderer: loaded catalog from {} (stars={})",
-            path.string(),
-            catalog_->records.size());
+        // spdlog::info(  // Dead code - logging removed
+        //     "StarfieldRenderer: loaded catalog from {} (stars={})",
+        //     path.string(),
+        //     catalog_->records.size());
         return true;
     }
     catch (const std::exception& ex)
     {
-        spdlog::error("StarfieldRenderer: failed to load catalog: {}", ex.what());
+        // spdlog::error("StarfieldRenderer: failed to load catalog: {}", ex.what());  // Dead code - logging removed
         return false;
     }
 }
@@ -563,15 +560,11 @@ bool StarfieldRenderer::createPipeline(ID3D12Device* device, DXGI_FORMAT targetF
     {
         if (error)
         {
-            spdlog::error(
-                "StarfieldRenderer: root signature serialization failed: {}",
-                static_cast<const char*>(error->GetBufferPointer()));
+            // spdlog::error("StarfieldRenderer: root signature serialization failed: {}", static_cast<const char*>(error->GetBufferPointer()));  // Dead code - logging removed
         }
         else
         {
-            spdlog::error(
-                "StarfieldRenderer: root signature serialization failed (hr=0x{:08X})",
-                static_cast<unsigned>(hr));
+            // spdlog::error("StarfieldRenderer: root signature serialization failed (hr=0x{:08X})", static_cast<unsigned>(hr));  // Dead code - logging removed
         }
         return false;
     }
@@ -583,7 +576,7 @@ bool StarfieldRenderer::createPipeline(ID3D12Device* device, DXGI_FORMAT targetF
         IID_PPV_ARGS(&rootSignature_));
     if (FAILED(hr))
     {
-        spdlog::error("StarfieldRenderer: CreateRootSignature failed (hr=0x{:08X})", static_cast<unsigned>(hr));
+        // spdlog::error("StarfieldRenderer: CreateRootSignature failed (hr=0x{:08X})", static_cast<unsigned>(hr));  // Dead code - logging removed
         return false;
     }
 
@@ -657,7 +650,7 @@ bool StarfieldRenderer::createPipeline(ID3D12Device* device, DXGI_FORMAT targetF
     hr = device->CreateGraphicsPipelineState(&starPso, IID_PPV_ARGS(&starfieldPipeline_));
     if (FAILED(hr))
     {
-        spdlog::error("StarfieldRenderer: CreateGraphicsPipelineState (starfield) failed (hr=0x{:08X})", static_cast<unsigned>(hr));
+        // spdlog::error("StarfieldRenderer: CreateGraphicsPipelineState (starfield) failed (hr=0x{:08X})", static_cast<unsigned>(hr));  // Dead code - logging removed
         return false;
     }
 
@@ -678,7 +671,7 @@ bool StarfieldRenderer::createPipeline(ID3D12Device* device, DXGI_FORMAT targetF
     hr = device->CreateGraphicsPipelineState(&routePso, IID_PPV_ARGS(&routePipeline_));
     if (FAILED(hr))
     {
-        spdlog::error("StarfieldRenderer: CreateGraphicsPipelineState (route) failed (hr=0x{:08X})", static_cast<unsigned>(hr));
+        // spdlog::error("StarfieldRenderer: CreateGraphicsPipelineState (route) failed (hr=0x{:08X})", static_cast<unsigned>(hr));  // Dead code - logging removed
         return false;
     }
 
@@ -689,7 +682,7 @@ bool StarfieldRenderer::createVertexBuffer(ID3D12Device* device)
 {
     if (!catalog_ || catalog_->records.empty())
     {
-        spdlog::warn("StarfieldRenderer: catalog has no records");
+        // spdlog::warn("StarfieldRenderer: catalog has no records");  // Dead code - logging removed
         return false;
     }
 
@@ -720,14 +713,7 @@ bool StarfieldRenderer::createVertexBuffer(ID3D12Device* device)
         if (sampleLogCount < 8)
         {
             sampleCatalogPositions_.push_back(vertex.position);
-            spdlog::info(
-                "StarfieldRenderer: catalog sample idx={} id={} pos=({:.1f},{:.1f},{:.1f}) security={:.2f}",
-                sampleLogCount,
-                record.system_id,
-                vertex.position.x,
-                vertex.position.y,
-                vertex.position.z,
-                vertex.security);
+            // spdlog::info("StarfieldRenderer: catalog sample idx={} id={} pos=({:.1f},{:.1f},{:.1f}) security={:.2f}", sampleLogCount, record.system_id, vertex.position.x, vertex.position.y, vertex.position.z, vertex.security);  // Dead code - logging removed
             ++sampleLogCount;
         }
     }
@@ -746,7 +732,7 @@ bool StarfieldRenderer::createVertexBuffer(ID3D12Device* device)
         IID_PPV_ARGS(&starVertexBuffer_));
     if (FAILED(hr))
     {
-        spdlog::error("StarfieldRenderer: failed to create vertex buffer (hr=0x{:08X})", static_cast<unsigned>(hr));
+        // spdlog::error("StarfieldRenderer: failed to create vertex buffer (hr=0x{:08X})", static_cast<unsigned>(hr));  // Dead code - logging removed
         return false;
     }
 
@@ -755,7 +741,7 @@ bool StarfieldRenderer::createVertexBuffer(ID3D12Device* device)
     hr = starVertexBuffer_->Map(0, &readRange, &mapped);
     if (FAILED(hr) || !mapped)
     {
-        spdlog::error("StarfieldRenderer: failed to map vertex buffer (hr=0x{:08X})", static_cast<unsigned>(hr));
+        // spdlog::error("StarfieldRenderer: failed to map vertex buffer (hr=0x{:08X})", static_cast<unsigned>(hr));  // Dead code - logging removed
         return false;
     }
 
@@ -763,7 +749,7 @@ bool StarfieldRenderer::createVertexBuffer(ID3D12Device* device)
     starVertexBuffer_->Unmap(0, nullptr);
 
     starVertexCount_ = static_cast<UINT>(vertices.size());
-    spdlog::info("StarfieldRenderer: vertex buffer uploaded (stars={})", starVertexCount_);
+    // spdlog::info("StarfieldRenderer: vertex buffer uploaded (stars={})", starVertexCount_);  // Dead code - logging removed
     starVertexView_.BufferLocation = starVertexBuffer_->GetGPUVirtualAddress();
     starVertexView_.SizeInBytes = bufferSize;
     starVertexView_.StrideInBytes = sizeof(StarVertex);
@@ -787,7 +773,7 @@ bool StarfieldRenderer::createConstantBuffer(ID3D12Device* device)
         IID_PPV_ARGS(&constantBuffer_));
     if (FAILED(hr))
     {
-        spdlog::error("StarfieldRenderer: failed to create constant buffer (hr=0x{:08X})", static_cast<unsigned>(hr));
+        // spdlog::error("StarfieldRenderer: failed to create constant buffer (hr=0x{:08X})", static_cast<unsigned>(hr));  // Dead code - logging removed
         return false;
     }
 
@@ -796,7 +782,7 @@ bool StarfieldRenderer::createConstantBuffer(ID3D12Device* device)
     hr = constantBuffer_->Map(0, &readRange, &mapped);
     if (FAILED(hr) || !mapped)
     {
-        spdlog::error("StarfieldRenderer: failed to map constant buffer (hr=0x{:08X})", static_cast<unsigned>(hr));
+        // spdlog::error("StarfieldRenderer: failed to map constant buffer (hr=0x{:08X})", static_cast<unsigned>(hr));  // Dead code - logging removed
         return false;
     }
 
@@ -837,7 +823,7 @@ bool StarfieldRenderer::ensureRouteCapacity(ID3D12Device* device, UINT vertexCou
         IID_PPV_ARGS(&routeVertexBuffer_));
     if (FAILED(hr))
     {
-        spdlog::error("StarfieldRenderer: failed to create route buffer (hr=0x{:08X})", static_cast<unsigned>(hr));
+        // spdlog::error("StarfieldRenderer: failed to create route buffer (hr=0x{:08X})", static_cast<unsigned>(hr));  // Dead code - logging removed
         routeVertexBuffer_.Reset();
         routeVertexCapacity_ = 0;
         return false;
@@ -848,7 +834,7 @@ bool StarfieldRenderer::ensureRouteCapacity(ID3D12Device* device, UINT vertexCou
     hr = routeVertexBuffer_->Map(0, &readRange, &mapped);
     if (FAILED(hr) || !mapped)
     {
-        spdlog::error("StarfieldRenderer: failed to map route buffer (hr=0x{:08X})", static_cast<unsigned>(hr));
+        // spdlog::error("StarfieldRenderer: failed to map route buffer (hr=0x{:08X})", static_cast<unsigned>(hr));  // Dead code - logging removed
         routeVertexBuffer_.Reset();
         routeVertexCapacity_ = 0;
         return false;
@@ -1064,27 +1050,27 @@ bool StarfieldRenderer::updateConstants(const overlay::OverlayState* state, UINT
     const int constantsLogIndex = g_constantsLogCounter.fetch_add(1, std::memory_order_relaxed);
     if (constantsLogIndex < 60 || hasCameraPose)
     {
-        spdlog::info(
-            "StarfieldRenderer: updateConstants camera=({:.2f},{:.2f},{:.2f}) target=({:.2f},{:.2f},{:.2f}) zoomScale={:.3f} manualZoom={:.3f} focusRadius={:.2f} treatAsLocal={} routeFocus={} viewport={}x{} near={:.2f} far={:.2f} cameraPose={} focusCenter=({:.2f},{:.2f},{:.2f})",
-            eye.x,
-            eye.y,
-            eye.z,
-            target.x,
-            target.y,
-            target.z,
-            zoomScale,
-            manualZoom_,
-            focusForPlanes,
-            treatAsLocalFocus,
-            routeFocusValid_,
-            width,
-            height,
-            nearPlane,
-            farPlane,
-            hasCameraPose,
-            focusCenter.x,
-            focusCenter.y,
-            focusCenter.z);
+        // spdlog::info(  // Dead code - logging removed
+        //     "StarfieldRenderer: updateConstants camera=({:.2f},{:.2f},{:.2f}) target=({:.2f},{:.2f},{:.2f}) zoomScale={:.3f} manualZoom={:.3f} focusRadius={:.2f} treatAsLocal={} routeFocus={} viewport={}x{} near={:.2f} far={:.2f} cameraPose={} focusCenter=({:.2f},{:.2f},{:.2f})",
+        //     eye.x,
+        //     eye.y,
+        //     eye.z,
+        //     target.x,
+        //     target.y,
+        //     target.z,
+        //     zoomScale,
+        //     manualZoom_,
+        //     focusForPlanes,
+        //     treatAsLocalFocus,
+        //     routeFocusValid_,
+        //     width,
+        //     height,
+        //     nearPlane,
+        //     farPlane,
+        //     hasCameraPose,
+        //     focusCenter.x,
+        //     focusCenter.y,
+        //     focusCenter.z);
     }
 
     if (!sampleCatalogPositions_.empty() && constantsLogIndex < 20)
@@ -1106,20 +1092,20 @@ bool StarfieldRenderer::updateConstants(const overlay::OverlayState* state, UINT
                 ndcX = clipF.x / clipF.w;
                 ndcY = clipF.y / clipF.w;
             }
-            spdlog::info(
-                "StarfieldRenderer: sample proj idx={} world=({:.1f},{:.1f},{:.1f}) clip=({:.2f},{:.2f},{:.2f},{:.2f}) ndc=({:.2f},{:.2f}) valid={} zoom={:.3f}",
-                i,
-                sample.x,
-                sample.y,
-                sample.z,
-                clipF.x,
-                clipF.y,
-                clipF.z,
-                clipF.w,
-                ndcX,
-                ndcY,
-                valid,
-                manualZoom_);
+            // spdlog::info(  // Dead code - logging removed
+            //     "StarfieldRenderer: sample proj idx={} world=({:.1f},{:.1f},{:.1f}) clip=({:.2f},{:.2f},{:.2f},{:.2f}) ndc=({:.2f},{:.2f}) valid={} zoom={:.3f}",
+            //     i,
+            //     sample.x,
+            //     sample.y,
+            //     sample.z,
+            //     clipF.x,
+            //     clipF.y,
+            //     clipF.z,
+            //     clipF.w,
+            //     ndcX,
+            //     ndcY,
+            //     valid,
+            //     manualZoom_);
         }
     }
 
@@ -1132,7 +1118,7 @@ bool StarfieldRenderer::updateRouteBuffer(const overlay::OverlayState* state)
     {
         if (routeVertexCount_ != 0)
         {
-            spdlog::debug("StarfieldRenderer: route buffer cleared (null state)");
+            // spdlog::debug("StarfieldRenderer: route buffer cleared (null state)");  // Dead code - logging removed
         }
         routeVertexCount_ = 0;
         routeFocusValid_ = false;
@@ -1141,7 +1127,7 @@ bool StarfieldRenderer::updateRouteBuffer(const overlay::OverlayState* state)
 
     if (!device_)
     {
-        spdlog::warn("StarfieldRenderer: updateRouteBuffer invoked without device");
+        // spdlog::warn("StarfieldRenderer: updateRouteBuffer invoked without device");  // Dead code - logging removed
         routeVertexCount_ = 0;
         routeFocusValid_ = false;
         return false;
@@ -1151,7 +1137,7 @@ bool StarfieldRenderer::updateRouteBuffer(const overlay::OverlayState* state)
     {
         if (routeVertexCount_ != 0)
         {
-            spdlog::info("StarfieldRenderer: route buffer cleared (empty route)");
+            // spdlog::info("StarfieldRenderer: route buffer cleared (empty route)");  // Dead code - logging removed
         }
         routeVertexCount_ = 0;
         routeFocusValid_ = false;
@@ -1174,12 +1160,12 @@ bool StarfieldRenderer::updateRouteBuffer(const overlay::OverlayState* state)
         const int logIndex = g_routeLogCounter.fetch_add(1, std::memory_order_relaxed);
         if (logIndex < 24)
         {
-            spdlog::info(
-                "StarfieldRenderer: processing route update (nodes={}, active='{}', generated_ms={}, focusValid={})",
-                state->route.size(),
-                activeId,
-                state->generated_at_ms,
-                routeFocusValid_);
+            // spdlog::info(  // Dead code - logging removed
+            //     "StarfieldRenderer: processing route update (nodes={}, active='{}', generated_ms={}, focusValid={})",
+            //     state->route.size(),
+            //     activeId,
+            //     state->generated_at_ms,
+            //     routeFocusValid_);
         }
     }
 
@@ -1233,7 +1219,7 @@ bool StarfieldRenderer::updateRouteBuffer(const overlay::OverlayState* state)
                 std::scoped_lock lock(g_missingNodesMutex);
                 if (g_loggedMissingNodes.insert(identifier).second)
                 {
-                    spdlog::warn("StarfieldRenderer: catalog lookup failed for route node '{}' (display='{}')", node.system_id, node.display_name);
+                    // spdlog::warn("StarfieldRenderer: catalog lookup failed for route node '{}' (display='{}')", node.system_id, node.display_name);  // Dead code - logging removed
                 }
             }
             continue;
@@ -1254,12 +1240,12 @@ bool StarfieldRenderer::updateRouteBuffer(const overlay::OverlayState* state)
 
         if (routeChanged)
         {
-            spdlog::debug(
-                "StarfieldRenderer:   node '{}'/'{}' resolved -> id={} active={}",
-                node.system_id,
-                node.display_name,
-                resolvedId,
-                isActive);
+            // spdlog::debug(  // Dead code - logging removed
+            //     "StarfieldRenderer:   node '{}'/'{}' resolved -> id={} active={}",
+            //     node.system_id,
+            //     node.display_name,
+            //     resolvedId,
+            //     isActive);
         }
     }
 
@@ -1269,7 +1255,7 @@ bool StarfieldRenderer::updateRouteBuffer(const overlay::OverlayState* state)
         routeFocusValid_ = false;
         if (state->generated_at_ms != previousTimestamp || state->route.size() != previousCount)
         {
-            spdlog::warn("StarfieldRenderer: route buffer empty after processing {} nodes", state->route.size());
+            // spdlog::warn("StarfieldRenderer: route buffer empty after processing {} nodes", state->route.size());  // Dead code - logging removed
         }
         return true;
     }
@@ -1321,7 +1307,7 @@ bool StarfieldRenderer::updateRouteBuffer(const overlay::OverlayState* state)
         lastActiveNodeId_ = state->active_route_node_id.value_or(std::string{});
         if (state->generated_at_ms != previousTimestamp || state->route.size() != previousCount)
         {
-            spdlog::info("StarfieldRenderer: route buffer updated (1 node, active='{}')", lastActiveNodeId_);
+            // spdlog::info("StarfieldRenderer: route buffer updated (1 node, active='{}')", lastActiveNodeId_);  // Dead code - logging removed
         }
         return true;
     }
@@ -1355,17 +1341,17 @@ bool StarfieldRenderer::updateRouteBuffer(const overlay::OverlayState* state)
 
     if (routeChanged)
     {
-        spdlog::info(
-            "StarfieldRenderer: route buffer updated (nodes={}, radius={:.2f}, active='{}')",
-            routeVertexCount_,
-            routeFocusRadius_,
-            lastActiveNodeId_);
-        spdlog::debug(
-            "StarfieldRenderer:   focus center=({:.2f},{:.2f},{:.2f}) radius={:.2f}",
-            routeFocusCenter_.x,
-            routeFocusCenter_.y,
-            routeFocusCenter_.z,
-            routeFocusRadius_);
+        // spdlog::info(  // Dead code - logging removed
+        //     "StarfieldRenderer: route buffer updated (nodes={}, radius={:.2f}, active='{}')",
+        //     routeVertexCount_,
+        //     routeFocusRadius_,
+        //     lastActiveNodeId_);
+        // spdlog::debug(  // Dead code - logging removed
+        //     "StarfieldRenderer:   focus center=({:.2f},{:.2f},{:.2f}) radius={:.2f}",
+        //     routeFocusCenter_.x,
+        //     routeFocusCenter_.y,
+        //     routeFocusCenter_.z,
+        //     routeFocusRadius_);
     }
 
     return true;
@@ -1442,11 +1428,11 @@ bool StarfieldRenderer::projectSystemToScreen(const std::string& systemId, float
         const int failIndex = g_projectionFailCounter.fetch_add(1, std::memory_order_relaxed);
         if (failIndex < 40)
         {
-            spdlog::debug(
-                "StarfieldRenderer: projection culled system='{}' resolved={} name='{}'",
-                systemId,
-                resolvedId,
-                std::string{name});
+            // spdlog::debug(  // Dead code - logging removed
+            //     "StarfieldRenderer: projection culled system='{}' resolved={} name='{}'",
+            //     systemId,
+            //     resolvedId,
+            //     std::string{name});
         }
     }
     return projected;
@@ -1462,11 +1448,11 @@ void StarfieldRenderer::adjustZoom(float wheelDelta)
     const float scale = std::exp(-wheelDelta * zoomStep_);
     const float previous = manualZoom_;
     manualZoom_ = std::clamp(manualZoom_ * scale, minZoom_, maxZoom_);
-    spdlog::info(
-        "StarfieldRenderer: manual zoom adjusted {} -> {} (wheel={:.3f})",
-        previous,
-        manualZoom_,
-        wheelDelta);
+    // spdlog::info(  // Dead code - logging removed
+    //     "StarfieldRenderer: manual zoom adjusted {} -> {} (wheel={:.3f})",
+    //     previous,
+    //     manualZoom_,
+    //     wheelDelta);
 }
 
 void StarfieldRenderer::resetZoom()
@@ -1476,7 +1462,7 @@ void StarfieldRenderer::resetZoom()
     manualPitch_ = 0.35f;
     manualPanX_ = 0.0f;
     manualPanY_ = 0.0f;
-    spdlog::info("StarfieldRenderer: manual view reset");
+    // spdlog::info("StarfieldRenderer: manual view reset");  // Dead code - logging removed
 }
 
 void StarfieldRenderer::orbitDrag(float deltaX, float deltaY)

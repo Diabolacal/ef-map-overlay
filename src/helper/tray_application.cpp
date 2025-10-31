@@ -2,14 +2,17 @@
 
 #include <shellapi.h>
 #include <shlobj.h>
+#include <tlhelp32.h>
 #include <spdlog/spdlog.h>
 
 #include <chrono>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <sstream>
+#include <vector>
 
 namespace
 {
@@ -155,6 +158,15 @@ HelperTrayApplication::HelperTrayApplication(HINSTANCE instance, HelperRuntime& 
     : hInstance_(instance)
     , runtime_(runtime)
 {
+    // Load config to restore debug logging preference
+    loadConfig();
+    
+    // Apply debug logging level if enabled
+    if (debugLoggingEnabled_)
+    {
+        spdlog::set_level(spdlog::level::debug);
+        spdlog::debug("Debug logging enabled from config");
+    }
 }
 
 HelperTrayApplication::~HelperTrayApplication()
@@ -300,7 +312,12 @@ void HelperTrayApplication::showContextMenu()
     ::InsertMenuW(menu, appendPos, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
     ::InsertMenuW(menu, appendPos, MF_BYPOSITION | MF_ENABLED, static_cast<UINT>(MenuId::SampleState), L"Post sample overlay state");
     ::InsertMenuW(menu, appendPos, MF_BYPOSITION | MF_ENABLED, static_cast<UINT>(MenuId::Inject), L"Start Overlay");
-    ::InsertMenuW(menu, appendPos, MF_BYPOSITION | MF_ENABLED, static_cast<UINT>(MenuId::OpenLogs), L"Open logs folder");
+    ::InsertMenuW(menu, appendPos, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
+    ::InsertMenuW(menu, appendPos, MF_BYPOSITION | (debugLoggingEnabled_ ? MF_CHECKED : MF_UNCHECKED), static_cast<UINT>(MenuId::ToggleDebugLogging), L"Enable debug logging");
+    ::InsertMenuW(menu, appendPos, MF_BYPOSITION | MF_ENABLED, static_cast<UINT>(MenuId::ExportDebugLogs), L"Export debug logs...");
+    ::InsertMenuW(menu, appendPos, MF_BYPOSITION | MF_ENABLED, static_cast<UINT>(MenuId::OpenHelperLogs), L"Open helper logs folder");
+    ::InsertMenuW(menu, appendPos, MF_BYPOSITION | MF_ENABLED, static_cast<UINT>(MenuId::OpenGameLogs), L"Open game logs folder");
+    ::InsertMenuW(menu, appendPos, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
     ::InsertMenuW(menu, appendPos, MF_BYPOSITION | MF_ENABLED, static_cast<UINT>(MenuId::CopyDiagnostics), L"Copy diagnostics to clipboard");
     ::InsertMenuW(menu, appendPos, MF_BYPOSITION | (running ? MF_ENABLED : MF_GRAYED), static_cast<UINT>(MenuId::OpenTelemetryHistory), L"Open telemetry history");
     ::InsertMenuW(menu, appendPos, MF_BYPOSITION | (running ? MF_ENABLED : MF_GRAYED), static_cast<UINT>(MenuId::ResetTelemetry), L"Reset telemetry session");
@@ -378,7 +395,22 @@ void HelperTrayApplication::handleCommand(MenuId id)
             updateTooltip();
             break;
         }
-        case MenuId::OpenLogs:
+        case MenuId::OpenHelperLogs:
+        {
+            const std::filesystem::path target = resolve_log_directory();
+            const auto logString = target.wstring();
+            if (reinterpret_cast<INT_PTR>(::ShellExecuteW(nullptr, L"open", logString.c_str(), nullptr, nullptr, SW_SHOWNORMAL)) <= 32)
+            {
+                std::wstring message = L"Unable to open helper logs directory: " + logString;
+                postBalloon(L"Helper Logs", message, NIIF_ERROR);
+            }
+            else
+            {
+                postBalloon(L"Helper Logs", L"Opened helper logs directory", NIIF_INFO);
+            }
+            break;
+        }
+        case MenuId::OpenGameLogs:
         {
             const auto status = runtime_.getStatus();
             std::filesystem::path target;
@@ -392,18 +424,20 @@ void HelperTrayApplication::handleCommand(MenuId id)
             }
             else
             {
-                target = resolve_log_directory();
+                // Game logs not available
+                postBalloon(L"Game Logs", L"Game log directory not available. Make sure the game is running and logs are enabled.", NIIF_WARNING);
+                break;
             }
 
             const auto logString = target.wstring();
             if (reinterpret_cast<INT_PTR>(::ShellExecuteW(nullptr, L"open", logString.c_str(), nullptr, nullptr, SW_SHOWNORMAL)) <= 32)
             {
-                std::wstring message = L"Unable to open logs directory: " + logString;
-                postBalloon(L"Logs", message, NIIF_ERROR);
+                std::wstring message = L"Unable to open game logs directory: " + logString;
+                postBalloon(L"Game Logs", message, NIIF_ERROR);
             }
             else
             {
-                postBalloon(L"Logs", L"Opened logs directory", NIIF_INFO);
+                postBalloon(L"Game Logs", L"Opened game logs directory", NIIF_INFO);
             }
             break;
         }
@@ -458,6 +492,16 @@ void HelperTrayApplication::handleCommand(MenuId id)
                 postBalloon(L"Telemetry reset", message, NIIF_ERROR);
             }
             updateTooltip();
+            break;
+        }
+        case MenuId::ToggleDebugLogging:
+        {
+            toggleDebugLogging();
+            break;
+        }
+        case MenuId::ExportDebugLogs:
+        {
+            exportDebugLogs();
             break;
         }
         case MenuId::Exit:
@@ -903,6 +947,424 @@ std::wstring HelperTrayApplication::formatTelemetryLine(const HelperRuntime::Sta
     }
 
     return oss.str();
+}
+
+std::filesystem::path HelperTrayApplication::getConfigPath() const
+{
+    PWSTR rawPath = nullptr;
+    std::filesystem::path result;
+    if (SUCCEEDED(::SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_CREATE, nullptr, &rawPath)))
+    {
+        result = std::filesystem::path(rawPath) / L"EFOverlay" / L"config.json";
+        ::CoTaskMemFree(rawPath);
+    }
+    else
+    {
+        result = std::filesystem::temp_directory_path() / L"EFOverlay" / L"config.json";
+    }
+
+    std::error_code ec;
+    std::filesystem::create_directories(result.parent_path(), ec);
+    return result;
+}
+
+bool HelperTrayApplication::loadConfig()
+{
+    const auto configPath = getConfigPath();
+    std::ifstream file(configPath);
+    if (!file.is_open())
+    {
+        // Config doesn't exist yet - use defaults
+        return false;
+    }
+
+    try
+    {
+        std::string line;
+        while (std::getline(file, line))
+        {
+            // Simple key-value parsing (debug_logging_enabled: true/false)
+            if (line.find("\"debug_logging_enabled\"") != std::string::npos)
+            {
+                debugLoggingEnabled_ = (line.find("true") != std::string::npos);
+            }
+        }
+        return true;
+    }
+    catch (...)
+    {
+        spdlog::warn("Failed to parse config file");
+        return false;
+    }
+}
+
+void HelperTrayApplication::saveConfig()
+{
+    const auto configPath = getConfigPath();
+    std::ofstream file(configPath);
+    if (!file.is_open())
+    {
+        spdlog::error("Failed to save config file: {}", configPath.string());
+        return;
+    }
+
+    // Simple JSON format
+    file << "{\n";
+    file << "  \"debug_logging_enabled\": " << (debugLoggingEnabled_ ? "true" : "false") << "\n";
+    file << "}\n";
+    file.close();
+
+    spdlog::debug("Config saved to: {}", configPath.string());
+}
+
+void HelperTrayApplication::toggleDebugLogging()
+{
+    debugLoggingEnabled_ = !debugLoggingEnabled_;
+
+    // Update spdlog level dynamically
+    if (debugLoggingEnabled_)
+    {
+        spdlog::set_level(spdlog::level::debug);
+        spdlog::info("Debug logging ENABLED");
+        postBalloon(L"Debug logging", L"Verbose logging enabled", NIIF_INFO);
+    }
+    else
+    {
+        spdlog::info("Debug logging DISABLED");
+        spdlog::set_level(spdlog::level::info);
+        postBalloon(L"Debug logging", L"Verbose logging disabled", NIIF_INFO);
+    }
+
+    // Persist to config
+    saveConfig();
+}
+
+std::string HelperTrayApplication::sanitizePath(const std::string& path) const
+{
+    std::string result = path;
+    
+    // Replace username in paths: C:\Users\JohnDoe\... → C:\Users\<USER>\...
+    std::size_t usersPos = result.find("\\Users\\");
+    if (usersPos != std::string::npos)
+    {
+        std::size_t nameStart = usersPos + 7; // Length of "\Users\"
+        std::size_t nameEnd = result.find("\\", nameStart);
+        if (nameEnd != std::string::npos)
+        {
+            result.replace(nameStart, nameEnd - nameStart, "<USER>");
+        }
+    }
+    
+    // Also sanitize machine name in UNC paths: \\MACHINE\share → \\<MACHINE>\share
+    if (result.size() >= 2 && result[0] == '\\' && result[1] == '\\')
+    {
+        std::size_t machineEnd = result.find("\\", 2);
+        if (machineEnd != std::string::npos)
+        {
+            result.replace(2, machineEnd - 2, "<MACHINE>");
+        }
+    }
+    
+    return result;
+}
+
+std::string HelperTrayApplication::sanitizeJson(const std::string& json) const
+{
+    // For now, just redact common PII fields
+    std::string result = json;
+    
+    // Simple string replacement for common patterns
+    const std::vector<std::string> piiFields = {
+        "characterName", "pilotName", "userName", 
+        "currentSystem", "systemName", "coordinates"
+    };
+    
+    for (const auto& field : piiFields)
+    {
+        std::size_t pos = 0;
+        while ((pos = result.find("\"" + field + "\"", pos)) != std::string::npos)
+        {
+            // Find the value (after the colon)
+            std::size_t colonPos = result.find(":", pos);
+            if (colonPos != std::string::npos)
+            {
+                std::size_t valueStart = result.find("\"", colonPos);
+                if (valueStart != std::string::npos)
+                {
+                    std::size_t valueEnd = result.find("\"", valueStart + 1);
+                    if (valueEnd != std::string::npos)
+                    {
+                        result.replace(valueStart + 1, valueEnd - valueStart - 1, "REDACTED");
+                        pos = valueEnd;
+                        continue;
+                    }
+                }
+            }
+            pos += field.length();
+        }
+    }
+    
+    return result;
+}
+
+std::string HelperTrayApplication::generateSystemInfo() const
+{
+    std::ostringstream ss;
+    
+    ss << "=== EF-Map Overlay Debug Report ===" << std::endl;
+    
+    // Timestamp
+    auto now = std::chrono::system_clock::now();
+    auto time_t = std::chrono::system_clock::to_time_t(now);
+    ss << "Generated: " << std::put_time(std::localtime(&time_t), "%Y-%m-%d %H:%M:%S") << std::endl;
+    ss << std::endl;
+    
+    // Helper version
+    ss << "Helper Version: 1.0.2" << std::endl;
+    ss << "Overlay DLL: ef-overlay.dll" << std::endl;
+    ss << std::endl;
+    
+    // Windows version
+    ss << "OS: Windows" << std::endl;
+    OSVERSIONINFOEXW osvi{};
+    osvi.dwOSVersionInfoSize = sizeof(osvi);
+    #pragma warning(push)
+    #pragma warning(disable: 4996)
+    ::GetVersionExW(reinterpret_cast<LPOSVERSIONINFOW>(&osvi));
+    #pragma warning(pop)
+    ss << "Build: " << osvi.dwBuildNumber << std::endl;
+    ss << std::endl;
+    
+    // Process info
+    ss << "Helper Process ID: " << ::GetCurrentProcessId() << std::endl;
+    
+    // Check if helper is elevated
+    BOOL isElevated = FALSE;
+    HANDLE token = nullptr;
+    if (::OpenProcessToken(::GetCurrentProcess(), TOKEN_QUERY, &token))
+    {
+        TOKEN_ELEVATION elevation{};
+        DWORD size = sizeof(elevation);
+        if (::GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &size))
+        {
+            isElevated = elevation.TokenIsElevated;
+        }
+        ::CloseHandle(token);
+    }
+    ss << "Helper Elevated: " << (isElevated ? "Yes" : "No") << std::endl;
+    
+    // Session ID
+    DWORD sessionId = 0;
+    ::ProcessIdToSessionId(::GetCurrentProcessId(), &sessionId);
+    ss << "Helper Session ID: " << sessionId << std::endl;
+    ss << std::endl;
+    
+    // Game process info
+    ss << "Game Process: (searching for exefile.exe...)" << std::endl;
+    DWORD gamePid = 0;
+    HANDLE snapshot = ::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot != INVALID_HANDLE_VALUE)
+    {
+        PROCESSENTRY32W entry{};
+        entry.dwSize = sizeof(entry);
+        if (::Process32FirstW(snapshot, &entry))
+        {
+            do
+            {
+                if (_wcsicmp(entry.szExeFile, L"exefile.exe") == 0)
+                {
+                    gamePid = entry.th32ProcessID;
+                    break;
+                }
+            } while (::Process32NextW(snapshot, &entry));
+        }
+        ::CloseHandle(snapshot);
+    }
+    
+    if (gamePid != 0)
+    {
+        ss << "Game Process ID: " << gamePid << std::endl;
+        
+        // Check game elevation
+        BOOL gameElevated = FALSE;
+        HANDLE gameToken = nullptr;
+        HANDLE gameHandle = ::OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, gamePid);
+        if (gameHandle)
+        {
+            if (::OpenProcessToken(gameHandle, TOKEN_QUERY, &gameToken))
+            {
+                TOKEN_ELEVATION elevation{};
+                DWORD size = sizeof(elevation);
+                if (::GetTokenInformation(gameToken, TokenElevation, &elevation, sizeof(elevation), &size))
+                {
+                    gameElevated = elevation.TokenIsElevated;
+                }
+                ::CloseHandle(gameToken);
+            }
+            ::CloseHandle(gameHandle);
+        }
+        ss << "Game Elevated: " << (gameElevated ? "Yes" : "No") << std::endl;
+        
+        // Session ID
+        DWORD gameSessionId = 0;
+        ::ProcessIdToSessionId(gamePid, &gameSessionId);
+        ss << "Game Session ID: " << gameSessionId << std::endl;
+        
+        // Check for elevation/session mismatch
+        if (isElevated != gameElevated)
+        {
+            ss << "WARNING: Elevation mismatch detected!" << std::endl;
+        }
+        if (sessionId != gameSessionId)
+        {
+            ss << "WARNING: Session mismatch detected!" << std::endl;
+        }
+    }
+    else
+    {
+        ss << "Game Process: Not running" << std::endl;
+    }
+    ss << std::endl;
+    
+    // HTTP server status
+    const auto status = runtime_.getStatus();
+    ss << "HTTP Server: " << (status.serverRunning ? "Running" : "Stopped") << std::endl;
+    ss << "HTTP Port: " << runtime_.server().port() << std::endl;
+    ss << std::endl;
+    
+    // Shared memory status
+    ss << "Shared Memory: (attempting to detect...)" << std::endl;
+    HANDLE shmHandle = ::OpenFileMappingW(FILE_MAP_READ, FALSE, L"Local\\EFOverlaySharedState");
+    if (shmHandle)
+    {
+        ss << "Shared Memory Handle: EXISTS" << std::endl;
+        ::CloseHandle(shmHandle);
+    }
+    else
+    {
+        ss << "Shared Memory Handle: NOT FOUND (error " << ::GetLastError() << ")" << std::endl;
+    }
+    ss << std::endl;
+    
+    // Runtime status summary
+    ss << "=== Runtime Status ===" << std::endl;
+    ss << "Overlay State: " << (status.hasOverlayState ? "Available" : "None") << std::endl;
+    ss << "Events Recorded: " << status.eventsRecorded << std::endl;
+    ss << "Events Buffered: " << status.eventsBuffered << std::endl;
+    ss << "Events Dropped: " << status.eventsDropped << std::endl;
+    
+    if (status.location)
+    {
+        ss << "Current System: " << sanitizePath(status.location->systemName) << std::endl;
+    }
+    
+    if (!status.lastErrorMessage.empty())
+    {
+        ss << std::endl << "=== Recent Errors ===" << std::endl;
+        ss << sanitizePath(status.lastErrorMessage) << std::endl;
+    }
+    
+    if (!status.lastInjectionMessage.empty())
+    {
+        ss << std::endl << "Last Injection Message:" << std::endl;
+        ss << sanitizePath(status.lastInjectionMessage) << std::endl;
+    }
+    
+    return ss.str();
+}
+
+void HelperTrayApplication::exportDebugLogs()
+{
+    try
+    {
+        // Flush current logs
+        spdlog::default_logger()->flush();
+        
+        // Get timestamp for filename
+        auto now = std::chrono::system_clock::now();
+        auto time_t = std::chrono::system_clock::to_time_t(now);
+        std::ostringstream timestamp;
+        timestamp << std::put_time(std::localtime(&time_t), "%Y-%m-%d_%H%M%S");
+        
+        // Get desktop path
+        PWSTR desktopPath = nullptr;
+        std::filesystem::path exportDir;
+        if (SUCCEEDED(::SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr, &desktopPath)))
+        {
+            exportDir = desktopPath;
+            ::CoTaskMemFree(desktopPath);
+        }
+        else
+        {
+            exportDir = std::filesystem::current_path();
+        }
+        
+        // Create export folder
+        std::string folderName = "EFOverlay_Logs_" + timestamp.str();
+        std::filesystem::path exportPath = exportDir / folderName;
+        std::filesystem::create_directories(exportPath);
+        
+        // Generate system info
+        std::string sysInfo = generateSystemInfo();
+        std::ofstream sysInfoFile(exportPath / "system_info.txt");
+        sysInfoFile << sysInfo;
+        sysInfoFile.close();
+        
+        // Copy log files (if they exist)
+        const auto logDir = resolve_log_directory();
+        std::error_code ec;
+        
+        if (std::filesystem::exists(logDir, ec))
+        {
+            for (const auto& entry : std::filesystem::directory_iterator(logDir, ec))
+            {
+                if (entry.is_regular_file())
+                {
+                    const auto& filename = entry.path().filename();
+                    
+                    // Read file content
+                    std::ifstream inFile(entry.path(), std::ios::binary);
+                    if (inFile.is_open())
+                    {
+                        std::string content((std::istreambuf_iterator<char>(inFile)),
+                                          std::istreambuf_iterator<char>());
+                        inFile.close();
+                        
+                        // Sanitize content
+                        content = sanitizePath(content);
+                        
+                        // Write sanitized content
+                        std::ofstream outFile(exportPath / filename);
+                        outFile << content;
+                        outFile.close();
+                    }
+                }
+            }
+        }
+        
+        // Copy config file
+        const auto configPath = getConfigPath();
+        if (std::filesystem::exists(configPath))
+        {
+            std::filesystem::copy_file(configPath, exportPath / "config.json", 
+                                      std::filesystem::copy_options::overwrite_existing, ec);
+        }
+        
+        // Open Explorer to show the folder
+        std::wstring explorerCmd = L"/select,\"" + (exportPath / "system_info.txt").wstring() + L"\"";
+        ::ShellExecuteW(nullptr, L"open", L"explorer.exe", explorerCmd.c_str(), nullptr, SW_SHOWNORMAL);
+        
+        // Show success notification
+        std::wstring message = L"Logs exported to:\n" + utf8_to_wide(folderName);
+        postBalloon(L"Debug logs exported", message, NIIF_INFO);
+        
+        spdlog::info("Debug logs exported to: {}", exportPath.string());
+    }
+    catch (const std::exception& e)
+    {
+        spdlog::error("Failed to export debug logs: {}", e.what());
+        postBalloon(L"Export failed", L"Unable to export debug logs", NIIF_ERROR);
+    }
 }
 
 std::wstring HelperTrayApplication::formatRelativeTime(const std::optional<std::chrono::system_clock::time_point>& stamp) const
