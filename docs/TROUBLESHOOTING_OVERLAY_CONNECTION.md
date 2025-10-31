@@ -214,6 +214,65 @@ Run through these in order:
 
 ---
 
+## ⚠️ Common Mistakes (DO NOT DO THESE)
+
+### ❌ DO NOT Try to Register the DLL
+
+**Wrong:** Running `regsvr32 ef-overlay.dll`
+
+**Error You'll See:**
+```
+The module 'ef-overlay.dll' was loaded but the entry-point
+DllRegisterServer was not found.
+```
+
+**Why It's Wrong:**
+- `ef-overlay.dll` is a **game hook DLL**, not a COM/ActiveX component
+- It doesn't have `DllRegisterServer` entry point (that's only for legacy COM DLLs)
+- `regsvr32` is for registering old Windows components, not modern game overlays
+- The DLL is designed to be **injected into a running process**, not registered globally
+
+**Correct Approach:**
+- The DLL is automatically loaded by the helper during injection
+- You **never** need to manually register it with Windows
+- Just use the "Start Overlay" button in the EF-Map web app
+- The helper handles all DLL loading/injection automatically
+
+### ❌ DO NOT Manually Copy DLL Files
+
+**Wrong:** Copying `ef-overlay.dll` to:
+- `C:\Windows\System32\`
+- `C:\Windows\SysWOW64\`
+- Game installation directory
+- Any other location
+
+**Why It's Wrong:**
+- The helper knows the exact location of the DLL (same folder as helper executable)
+- Manual copying can cause version mismatches between helper and DLL
+- DLL must stay in the helper installation directory for updates to work
+- Windows system directories are for system DLLs only, not game overlays
+
+**Correct Approach:**
+- Leave the DLL in its original location
+- Microsoft Store version: DLL is inside the WindowsApps package
+- Development build: DLL is in the same folder as `ef-overlay-tray.exe`
+- The helper automatically finds and injects the correct DLL version
+
+### ❌ DO NOT Run Game with Compatibility Mode
+
+**Wrong:** Right-click game → Properties → Compatibility → "Run this program in compatibility mode"
+
+**Why It's Wrong:**
+- Compatibility mode can break DirectX 12 rendering
+- May prevent DLL injection entirely
+- Creates additional session isolation issues
+
+**Correct Approach:**
+- Run the game normally (no compatibility settings)
+- EVE Frontier is a modern game that doesn't need compatibility mode
+
+---
+
 ## Known Issues & Future Fixes
 
 ### Issue: MSIX AppContainer Isolation
