@@ -469,25 +469,26 @@ After 3+ hours of failed attempts (immediate log parsing, WebSocket GET on conne
 - Tribe bookmark: Authenticate + join tribe → tick tribe checkbox → add bookmark → verify appears ONLY in tribe folder (not personal).
 - No auth bookmark: Log out → verify tribe checkbox hidden → add bookmark → verify goes to personal folder.
 
-### Phase 6 – Packaging & distribution ✅ **COMPLETE** *(2025-10-30)*
+### Phase 6 – Packaging & distribution ✅ **COMPLETE** *(2025-11-04)*
 
 #### Overview
-Deliver a signed, installable helper package with frictionless first-run experience and automatic updates via **dual distribution**: immediate GitHub Releases (ZIP) + Microsoft Store (MSIX with automatic signing).
+Deliver a signed, installable helper package with frictionless first-run experience and automatic updates via **Microsoft Store distribution**.
 
-#### Distribution Strategy (Dual Path)
-**Chosen approach**: Run both channels simultaneously for maximum reach and flexibility.
+#### Final Distribution Strategy (2025-11-04)
+**Primary distribution**: Microsoft Store (MSIX with automatic signing and updates)
 
 | Channel | Format | Signing | Target Audience | Status |
 |---------|--------|---------|----------------|---------|
-| **GitHub Releases** | ZIP (manual install) | Self-signed test cert | Power users, immediate availability | ✅ **LIVE** (v1.0.0) |
-| **Microsoft Store** | MSIX | Microsoft signs during certification | General users, auto-updates | ✅ **LIVE** (2025-10-30) |
+| **Microsoft Store** | MSIX | Microsoft signs during certification | All users, auto-updates | ✅ **LIVE** (2025-10-30) |
+| **GitHub Releases** | ZIP (manual install) | Self-signed test cert | Legacy/power users | ✅ Available (v1.0.0) |
 
-**GitHub Release v1.0.0**: Published at https://github.com/Diabolacal/ef-map-overlay/releases/tag/v1.0.0
-- Contains: ZIP with helper.exe, overlay.dll, injector.exe, PowerShell installation script
-- Installation: Extract → run `install.ps1` (creates shortcuts, registers protocol handler)
-- Users: Available immediately for players who want overlay features now
+**Key Decision (2025-11-04):**
+- **Azure Trusted Signing** was unavailable (restricted to US/Canada only)
+- **Microsoft Store** chosen as primary distribution path ($19 one-time fee)
+- Provides same benefits as Azure signing: automatic code signing, auto-updates, SmartScreen trust
+- **Cloudflare R2 distribution** no longer needed (Microsoft Store handles hosting)
 
-**Microsoft Store**: ✅ **PUBLISHED** (2025-10-30)
+**Microsoft Store**: ✅ **PUBLISHED AND LIVE**
 - Package: `EFMapHelper-v1.0.0.msix` (1.26 MB, signed by Microsoft)
 - Publisher: Ef-Map (Individual account, ID: `CN=9523ACA0-C1D5-4790-88D6-D95FA23F0EF9`)
 - App Name: "EF-Map Overlay Helper"
