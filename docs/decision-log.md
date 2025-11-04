@@ -1,5 +1,21 @@
 # Technical Decision Log (EF-Map Overlay)
 
+## 2025-11-04 – Phase 6 Complete: Microsoft Store Distribution (Cross-repo Update)
+- **Goal:** Document Phase 6 completion and Azure Code Signing unavailability
+- **Status:** COMPLETE
+- **Files:** `docs/initiatives/GAME_OVERLAY_PLAN.md` (this repo + `EF-Map-main` mirror)
+- **Diff:** Updated Phase 6 status from "in progress" to "complete", documented Azure Trusted Signing restriction
+- **Risk:** Low (documentation only)
+- **Cross-repo:** See `EF-Map-main/docs/decision-log.md` → "2025-11-04 – Phase 6 Complete: Microsoft Store Distribution"
+- **Key Finding:** Azure Trusted Signing only available in US/Canada (geographic restriction discovered during setup attempt)
+- **Resolution:** Microsoft Store distribution chosen as primary path:
+  - ✅ Automatic code signing (Microsoft certificate during Store certification)
+  - ✅ Auto-updates via Store infrastructure (no custom update code needed)
+  - ✅ SmartScreen trust (no "unknown publisher" warnings)
+  - ✅ One-time $19 fee vs $9.99/month for Azure Trusted Signing
+- **Cloudflare R2:** No longer needed for helper distribution (Microsoft Store handles hosting)
+- **Production Status:** All Phase 6 blockers resolved; Phase 5 web app features now production-ready
+
 ## 2025-10-31 – Store Submission v1.0.2 Publisher Validation Error (Packaging Script Bug)
 - Goal: Fix Store validation errors for v1.0.2 submission caused by incorrect Publisher value
 - Files:
