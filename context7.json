@@ -1,0 +1,52 @@
+{
+  "$schema": "https://context7.com/schema/context7.json",
+  "projectTitle": "EF-Map Overlay",
+  "description": "Native Windows helper application and DirectX 12 overlay for EVE Frontier game integration - surfaces EF-Map routing data and telemetry in-game with C++ helper, DX12 renderer, and ImGui UI",
+  "branch": "main",
+  "folders": [
+    "docs",
+    ".github",
+    "src"
+  ],
+  "excludeFolders": [
+    "build",
+    "out",
+    "Debug",
+    "Release",
+    "RelWithDebInfo",
+    "MinSizeRel",
+    "x64",
+    ".vs",
+    "CMakeFiles",
+    "_deps",
+    "Testing",
+    "packages",
+    "releases"
+  ],
+  "excludeFiles": [
+    "*.obj",
+    "*.pdb",
+    "*.ilk",
+    "*.exe",
+    "*.dll",
+    "*.lib",
+    "*.exp",
+    "*.log",
+    "*.user",
+    "*.filters",
+    "*.vcxproj",
+    "*.sln",
+    "CMakeCache.txt",
+    "tmp_*.json",
+    "tmp_*.txt"
+  ],
+  "rules": [
+    "CRITICAL: Helper must launch from external PowerShell window (not VS Code terminal) for smoke testing",
+    "Use process name 'exefile.exe' for injection (not PID - PIDs change every launch)",
+    "Follow GPT-5 Codex workflow: purposeful preamble, synchronized todo list, delta-style updates",
+    "Automated smoke testing: assistant executes ALL scriptable steps (helper launch, injection, route calc verification)",
+    "Cross-repo coordination: keep GAME_OVERLAY_PLAN.md synchronized with EF-Map-main copy",
+    "Microsoft Store releases: follow BUILD_RELEASE_GUIDE.md exactly; always run verify_msix_contents.ps1 before upload",
+    "Overlay protocol contracts: document in this repo; implement helper/DX12 logic here; web app payload schemas stay in EF-Map-main"
+  ]
+}
