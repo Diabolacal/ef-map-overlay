@@ -1,5 +1,95 @@
 # Technical Decision Log (EF-Map Overlay)
 
+## 2025-11-06 – Diagnostic Tool for Injection Failure Troubleshooting
+
+**Goal:** Create low-friction diagnostic script for users experiencing overlay injection failures despite helper showing "connected" status in browser. Enable remote troubleshooting without requiring technical expertise from users.
+
+**Context:** Several users reported overlay injection failures with helper connected but no overlay appearing in-game. Browser error message unhelpful ("Helper not detected. Is it running?"). Need systematic diagnostics to identify root causes remotely via Discord.
+
+**Files Created:**
+- `tools/diagnose_injection_failure.ps1`: PowerShell diagnostic script (450+ lines)
+- `tools/DIAGNOSTIC_TOOL_USAGE.md`: Comprehensive user documentation with step-by-step instructions
+- `tools/QUICK_HELP_DISCORD.md`: Condensed quick-reference guide for Discord distribution
+
+**Implementation:**
+Script collects 10 diagnostic areas:
+1. System information (Windows version, architecture, build)
+2. UAC configuration (elevation settings, consent prompt behavior)
+3. User sessions (multi-session detection, RDP conflicts)
+4. Process details (helper/game elevation, session IDs, memory usage, startup times)
+5. Helper installation type (Microsoft Store MSIX vs development build detection)
+6. DLL injection status (module enumeration, overlay.dll presence verification)
+7. Helper logs (error/warning extraction, pattern matching for common failures)
+8. Security software detection (Windows Defender status, third-party AV products)
+9. Helper API connectivity (health endpoint, status endpoint, overlay connection flag)
+10. Shared memory diagnostic (usage instructions for Process Explorer verification)
+
+**Automated Issue Detection:**
+- ✅ Elevation mismatch (helper elevated vs game non-elevated, or vice versa)
+- ✅ Session ID mismatch (multiple user sessions, RDP conflicts)
+- ✅ Microsoft Store AppContainer restrictions (WindowsApps path detection)
+- ✅ DLL injection failure (module not loaded in game process)
+- ✅ Helper log errors (pattern matching for "Failed to create shared memory", "Injection failed", "Access denied")
+- ✅ Multiple user sessions active (shared memory isolation risk)
+- ✅ Third-party security software (antivirus interference)
+- ✅ Helper API non-responsive (process not running or HTTP server failed)
+
+**Output Format:**
+- Summary section (beginning of report): issue count, detected problems, prioritized recommendations
+- Detailed sections (10 diagnostic areas with formatted data)
+- Next steps (instructions to send report via Discord)
+- Auto-saves to Desktop with timestamped filename
+- Optional `-IncludeLogs` flag for full helper log contents (increases report size)
+- Interactive prompt to open report file in Notepad after generation
+
+**User Workflow:**
+1. Download script via Discord
+2. Ensure helper + game both running, injection attempted
+3. Right-click script → "Run with PowerShell" (or manual PowerShell execution)
+4. Script auto-collects diagnostics (10-30 seconds)
+5. Report saved to Desktop with timestamp
+6. User sends report file via Discord
+7. Developer analyzes report, provides targeted fix
+
+**Common Failure Patterns Addressed (from `TROUBLESHOOTING_OVERLAY_CONNECTION.md`):**
+- **Elevation mismatch (90% of cases):** Helper elevated but game non-elevated (or vice versa) → Different shared memory session isolation
+- **Multi-session conflicts:** Multiple Windows users logged in or RDP sessions → Shared memory namespace separation
+- **MSIX AppContainer restrictions:** Microsoft Store version sandboxing prevents IPC with game process
+- **Security software blocking:** Antivirus sees DLL injection as malicious, silently blocks without user notification
+- **UAC disabled:** Affects injection permissions and shared memory creation
+- **DLL injection success but no render:** Game running in DX11/Vulkan mode (overlay requires DX12)
+
+**Testing:**
+- ✅ Script executes successfully on Windows 11 with helper + game running
+- ✅ Detects Microsoft Store version (reports AppContainer warning)
+- ✅ Identifies DLL not loaded in game process (250 modules enumerated)
+- ✅ Detects missing helper logs (reports warning)
+- ✅ Tests helper API connectivity (health + status endpoints)
+- ✅ Generates clean report with formatted sections
+- ✅ Auto-saves to Desktop with timestamp
+- ✅ Provides actionable recommendations in summary section
+
+**Risk:** Low – diagnostic collection only, no system modifications
+
+**Gates:**
+- ✅ Script runs without errors on test system
+- ✅ Output formatting clean and readable
+- ✅ All 10 diagnostic sections populate correctly
+- ✅ Issue detection logic validates correctly (elevation, session, DLL status)
+- ✅ Helper API tests functional (HTTP endpoint connectivity)
+- ✅ Documentation complete (usage guide + Discord quick reference)
+
+**Follow-ups:**
+- Monitor user reports from Discord to validate diagnostic coverage
+- Add additional issue patterns if new failure modes discovered
+- Consider adding shared memory handle enumeration (currently requires Process Explorer)
+- Track success rate of remote troubleshooting with diagnostic reports
+- Update documentation if script execution policy errors reported frequently
+
+**Diff:** +3 files (~1200 lines total), 0 code changes to helper/overlay binaries
+
+**Cross-repo:** Main repository workflow unaffected; helper debugging remains overlay-repo specific
+
 ## 2025-11-06 – Context7 MCP Integration for Agent Documentation Retrieval
 
 **Goal:** Enable AI agents to retrieve documentation from this repository and 500+ external libraries without user intervention, dramatically accelerating context-gathering workflows.
