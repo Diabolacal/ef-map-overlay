@@ -12,6 +12,7 @@ Purpose: Guardrails for agents working in the dedicated game-overlay repository 
 - What: Windows helper app + DirectX 12 overlay pipeline that surfaces EF-Map data in-game.
 - Relationship: The EF-Map web app (repo: `EF-Map-main`) remains the source of map data, APIs, and usage conventions. This repository focuses on the native helper, overlay DLL, and desktop-side tooling.
 - Source control: Keep helper/overlay code isolated here; frontend/web worker changes continue to live in `EF-Map-main`.
+- Tooling: **Context7 MCP** (`context7`): Configured at repository level for GitHub Copilot Agent. Provides up-to-date library documentation (DX12, Windows API, ImGui, CMake, MSI/MSIX packaging). Add "use context7" to prompts or it auto-invokes based on context. See `docs/CONTEXT7_MCP_SETUP.md` for details.
 
 Useful entry points:
 - Guardrails & workflow: `.github/copilot-instructions.md` (this repo) and `EF-Map-main/.github/copilot-instructions.md` for the web app.
@@ -59,6 +60,58 @@ Current status snapshot (2025-10-31):
 **Rationale:** LLM can execute these steps 10-100x faster than manual user execution. User provides high-level intent and visual confirmation only. This workflow optimization is fundamental to efficient overlay development.
 
 **External PowerShell requirement:** Helper MUST launch via `Start-Process -PassThru` (not VS Code terminal) - integrated terminals fail to bind helper correctly. Use process name `exefile.exe` (not PID) for injection.
+
+## Context7 MCP Integration
+
+**Purpose**: Retrieve up-to-date documentation from this repository and 500+ external libraries without user intervention.
+
+**When to use**:
+- Repository documentation lookups (troubleshooting guides, decision logs, specifications, build procedures)
+- Library/framework documentation (DX12, Windows API, ImGui, CMake, MSI/MSIX packaging)
+- Cross-repo coordination (EF-Map-main web app protocols, payload schemas)
+- Any scenario where you'd ask user to attach files
+
+**Library identifiers**:
+- This repository: `/diabolacal/ef-map-overlay` (163 code snippets)
+- Main web app repository: `/diabolacal/ef-map` (1,143 code snippets)
+
+**Usage patterns**:
+- **Automatic invocation**: Context7 activates automatically when context suggests documentation lookup
+- **Explicit invocation**: Add "use context7" to prompts when you want to guarantee usage
+- **Targeted queries**: `mcp_context7_get-library-docs` with library ID + topic for focused results
+- **Library search**: `mcp_context7_resolve-library-id` to find external libraries by name
+
+**Query examples**:
+```
+"use context7: show overlay smoke testing procedure with external PowerShell requirement"
+"use context7: explain Windows API for DX12 swap chain hooking"
+"use context7: find Microsoft Store packaging and verification procedures"
+"use context7: retrieve helper protocol contracts and IPC schemas"
+```
+
+**Benefits over manual file attachment**:
+- **Speed**: 10-15 seconds vs 3-5 minutes (12-20x faster)
+- **User effort**: Zero interruption vs manual file hunting and attachment
+- **Synthesis**: Automatically combines information from multiple doc sources
+- **Accuracy**: Includes LIBRARY RULES from `context7.json` configuration (CRITICAL external PowerShell, process name injection, etc.)
+- **Freshness**: Retrieves up-to-date documentation from indexed repositories
+
+**What Context7 returns**:
+- Library rules (operational guardrails from `context7.json` - CRITICAL smoke testing requirements)
+- Code snippets (PowerShell commands, C++ code, CMake configurations, API examples)
+- API documentation (helper endpoints, protocol schemas, packaging scripts)
+- Cross-references (related files, decision log entries, build guides)
+
+**Performance expectations**:
+- Typical query response: 10-15 seconds
+- Reduces message exchanges: 1 message vs 3-4 back-and-forth
+- Eliminates context-gathering delays entirely
+
+**Configuration**:
+- VS Code setup: `.vscode/mcp.json` (local stdio transport)
+- Indexing rules: `context7.json` (exclusions, focus areas, operational rules)
+- API key: Environment variable in MCP config (never committed)
+- Refresh: Automatic via Context7 platform; manual resubmit for major changes
 
 ## High-risk surfaces (coordinate before changing)
 - **Process injection & DX12 hook** – Files under `src/overlay/` that touch swap-chain hooks or input routing; mistakes can crash the game client. Keep smoke script handy for validation.

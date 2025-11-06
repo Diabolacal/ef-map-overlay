@@ -57,6 +57,14 @@ For the combined guardrails that apply to both repos, cross-reference `EF-Map-ma
 - **Impact:** Dramatically accelerates web app integration debugging (2025-10-27: discovered malformed URLs + duplicate CORS headers in < 10 minutes).
 - **Proactive:** Default to MCP for any browser-side testing instead of asking user to manually check DevTools.
 
+### Context7 MCP Integration
+- **Available:** Context7 MCP server (`context7`) - registered for VS Code Copilot at repository level.
+- **Purpose:** Retrieve up-to-date documentation from this repository (`/diabolacal/ef-map-overlay` - 163 code snippets) and 500+ external libraries (DX12, Windows API, ImGui, CMake, MSI/MSIX packaging) without user intervention.
+- **Usage:** Automatically invokes for documentation lookups or add "use context7" to prompts for explicit queries. Dramatically reduces context-gathering time (10-15 seconds vs 3-5 minutes of manual file attachment).
+- **Query examples:** "use context7: show smoke testing procedure", "use context7: explain Windows API for DX12 hooking", "use context7: find Microsoft Store packaging procedures"
+- **Returns:** LIBRARY RULES from `context7.json` (CRITICAL external PowerShell requirement, process name injection), code snippets (PowerShell/C++ commands), API docs, cross-references
+- **Workflow:** See `AGENTS.md` → "Context7 MCP Integration" for complete query patterns and benefits (12-20x faster than manual file attachment)
+
 ### Security & Signing
 - Never commit private keys or certificates. Reference secure storage paths and document usage procedures.
 - When documenting signing or installer steps, include placeholders (e.g., `<CERT_THUMBPRINT>`) rather than actual values.
